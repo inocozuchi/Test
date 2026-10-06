@@ -2,105 +2,310 @@
 <html lang="ja">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<title>カメラ性能チェック</title>
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="theme-color" content="#000000">
+<title>無音カメラ</title>
 <style>
-  body { font-family: -apple-system, sans-serif; margin: 0; padding: 16px; background: #111; color: #eee; }
-  video { width: 100%; max-height: 40vh; background: #000; border-radius: 8px; }
-  button { font-size: 16px; padding: 10px 14px; margin: 4px 4px 4px 0; border-radius: 8px; border: 0; background: #2a7; color: #fff; }
-  button:disabled { background: #555; }
-  pre { background: #1c1c1c; padding: 10px; border-radius: 8px; white-space: pre-wrap; word-break: break-all; font-size: 12px; }
-  h2 { font-size: 15px; margin: 16px 0 4px; }
+  [hidden] { display: none !important; }
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  html, body { margin: 0; height: 100%; background: #000; color: #fff; overflow: hidden;
+    font-family: -apple-system, sans-serif; touch-action: manipulation; -webkit-user-select: none; user-select: none; }
+  #preview { position: fixed; inset: 0; width: 100%; height: 100%; object-fit: contain; background: #000; }
+  #topbar { position: fixed; top: env(safe-area-inset-top); left: 0; right: 0; padding: 8px 16px;
+    display: flex; gap: 8px; align-items: center; justify-content: space-between; font-size: 13px; }
+  #info { background: rgba(0,0,0,.5); padding: 4px 8px; border-radius: 6px; }
+  select { font-size: 14px; background: rgba(0,0,0,.6); color: #fff; border: 1px solid #555; border-radius: 6px; padding: 4px; }
+  #controls { position: fixed; bottom: calc(env(safe-area-inset-bottom) + 20px); left: 0; right: 0;
+    display: flex; justify-content: space-around; align-items: center; padding: 0 16px; }
+  .btn { border: 0; border-radius: 999px; font-size: 15px; color: #fff; background: rgba(255,255,255,.18); padding: 12px 16px; }
+  #shutter { width: 72px; height: 72px; border-radius: 50%; border: 4px solid #fff; background: #fff; padding: 0; }
+  #recBtn { width: 72px; height: 72px; border-radius: 50%; border: 4px solid #fff; background: #e33; padding: 0; }
+  #flash { position: fixed; inset: 0; border: 6px solid #fff; opacity: 0; pointer-events: none; transition: opacity .25s; }
+  #start { position: fixed; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 16px; padding: 16px; text-align: center; }
+
+  /* 録画中の真っ黒画面 */
+  #black { position: fixed; inset: 0; background: #000; display: none; z-index: 10; }
+  #tapHint { position: absolute; left: 50%; bottom: 40px; transform: translateX(-50%); color: #222; font-size: 14px; opacity: 0; transition: opacity .3s; }
+
+  /* メモ画面(白背景) */
+  #memo { position: fixed; inset: 0; background: #fff; color: #000; display: none; z-index: 20;
+    padding: calc(env(safe-area-inset-top) + 12px) 16px calc(env(safe-area-inset-bottom) + 12px);
+    flex-direction: column; gap: 8px; -webkit-user-select: text; user-select: text; }
+  #memo header { display: flex; justify-content: space-between; align-items: center; font-size: 14px; color: #555; }
+  #memoText { flex: 1; width: 100%; font-size: 17px; border: 1px solid #ccc; border-radius: 8px; padding: 10px; color: #000; background: #fff; resize: none; }
+  #memoBack { background: #000; color: #fff; }
+
+  /* 保存画面 */
+  #result { position: fixed; inset: 0; background: #111; display: none; z-index: 30; flex-direction: column;
+    align-items: center; justify-content: center; gap: 12px; padding: 16px; text-align: center; }
+  #result .btn { width: 100%; max-width: 320px; background: #2a7; }
+  #result .btn.sub { background: #444; }
+  #msg { font-size: 14px; color: #ccc; white-space: pre-wrap; }
 </style>
 </head>
 <body>
-<h1 style="font-size:18px">カメラ性能チェック</h1>
-<p>画面の指示どおりにボタンを順に押し、下に出る結果をそのまま共有してください。</p>
+<video id="preview" playsinline muted autoplay></video>
+<div id="flash"></div>
 
-<video id="v" playsinline muted autoplay></video>
+<div id="start">
+  <div style="font-size:20px">無音カメラ</div>
+  <div style="font-size:13px;color:#aaa">シャッター音・録画音は一切鳴りません</div>
+  <button class="btn" id="startBtn" style="background:#2a7">カメラを起動</button>
+  <div id="startErr" style="color:#f88;font-size:13px"></div>
+</div>
 
-<h2>1. 解像度・フレームレートを試す</h2>
-<div id="presets"></div>
-<pre id="settings">未実行</pre>
+<div id="topbar" hidden>
+  <span id="info">準備中...</span>
+  <select id="quality">
+    <option value="auto">自動(最高)</option>
+    <option value="3840x2160@60">4K 60fps</option>
+    <option value="3840x2160@30">4K 30fps</option>
+    <option value="1920x1080@60">1080p 60fps</option>
+    <option value="1920x1080@30">1080p 30fps</option>
+    <option value="1920x1080@120">1080p 120fps</option>
+    <option value="1920x1080@240">1080p 240fps</option>
+  </select>
+</div>
 
-<h2>2. 録画して実ビットレートを測る(5秒)</h2>
-<button id="rec">録画テスト</button>
-<pre id="recResult">未実行</pre>
+<div id="controls" hidden>
+  <button class="btn" id="savePhotos">写真を保存 (0)</button>
+  <button id="shutter" aria-label="写真"></button>
+  <button id="recBtn" aria-label="録画開始"></button>
+</div>
 
-<h2>3. 端末情報</h2>
-<pre id="env"></pre>
+<div id="black"><div id="tapHint"></div></div>
+
+<div id="memo">
+  <header><span>メモ(録画は継続中 <span id="memoTime">00:00</span>)</span>
+    <button class="btn" id="memoBack">戻る</button></header>
+  <textarea id="memoText" placeholder="メモを入力"></textarea>
+</div>
+
+<div id="result">
+  <div id="msg"></div>
+  <button class="btn" id="saveVideo">動画を保存</button>
+  <button class="btn" id="saveMemo">メモを保存</button>
+  <button class="btn sub" id="closeResult">カメラに戻る</button>
+</div>
 
 <script>
 const $ = id => document.getElementById(id);
-const video = $('v');
+const video = $('preview');
 let stream = null;
+let photos = [];
+let rec = null, sink = null, recStart = 0, recMime = '', recordedFile = null;
+let wakeLock = null;
 
-const presets = [
-  ['1080p30', 1920, 1080, 30],
-  ['1080p60', 1920, 1080, 60],
-  ['4K30', 3840, 2160, 30],
-  ['4K60', 3840, 2160, 60],
-  ['1080p120(スロー)', 1920, 1080, 120],
-  ['1080p240(スロー)', 1920, 1080, 240],
-];
+// ---------- カメラ ----------
+const CANDIDATES = [[3840, 2160, 60], [3840, 2160, 30], [1920, 1080, 60], [1920, 1080, 30], [1280, 720, 30]];
 
-$('env').textContent = [
-  'UA: ' + navigator.userAgent,
-  'MediaRecorder: ' + (typeof MediaRecorder),
-  'ImageCapture: ' + (typeof ImageCapture),
-  ['video/mp4', 'video/mp4;codecs=hvc1', 'video/mp4;codecs=avc1', 'video/webm']
-    .map(t => `  ${t}: ${window.MediaRecorder && MediaRecorder.isTypeSupported(t)}`).join('\n'),
-].join('\n');
+function fmtSettings() {
+  const s = stream.getVideoTracks()[0].getSettings();
+  return { w: s.width, h: s.height, fps: Math.round(s.frameRate || 0) };
+}
 
-async function start(w, h, fps) {
-  if (stream) stream.getTracks().forEach(t => t.stop());
-  // 'exact' にすると、未対応の場合にエラーで分かる
+async function applyQuality(value) {
+  const track = stream.getVideoTracks()[0];
+  const list = value === 'auto' ? CANDIDATES : [value.split(/[x@]/).map(Number)];
+  let best = null;
+  for (const [w, h, fps] of list) {
+    try {
+      await track.applyConstraints({ width: { ideal: w }, height: { ideal: h }, frameRate: { ideal: fps } });
+    } catch (e) { continue; }
+    const s = fmtSettings();
+    const ok = Math.max(s.w, s.h) >= w && s.fps >= fps - 1;
+    if (ok) { best = s; break; }
+    if (!best || s.w * s.h * s.fps > best.w * best.h * best.fps) best = s;
+  }
+  const s = fmtSettings();
+  $('info').textContent = `${Math.max(s.w, s.h)}×${Math.min(s.w, s.h)} ${s.fps}fps`;
+}
+
+async function startCamera() {
   stream = await navigator.mediaDevices.getUserMedia({
-    audio: false,
-    video: { facingMode: { ideal: 'environment' },
-             width: { exact: w }, height: { exact: h }, frameRate: { exact: fps } },
+    video: { facingMode: { ideal: 'environment' }, width: { ideal: 3840 }, height: { ideal: 2160 }, frameRate: { ideal: 60 } },
+    audio: true,
   });
   video.srcObject = stream;
   await video.play();
-  const track = stream.getVideoTracks()[0];
-  const s = track.getSettings();
-  const c = track.getCapabilities ? track.getCapabilities() : {};
-  return { settings: s, capabilities: c };
+  await applyQuality($('quality').value);
 }
 
-for (const [label, w, h, fps] of presets) {
-  const b = document.createElement('button');
-  b.textContent = label;
-  b.onclick = async () => {
-    $('settings').textContent = `${label} を要求中...`;
-    try {
-      const r = await start(w, h, fps);
-      $('settings').textContent = `${label}: 成功\n` + JSON.stringify(r, null, 1);
-    } catch (e) {
-      $('settings').textContent = `${label}: 失敗 (${e.name}: ${e.message})`;
+$('startBtn').onclick = async () => {
+  try {
+    await startCamera();
+    $('start').hidden = true; $('start').style.display = 'none';
+    $('topbar').hidden = false; $('controls').hidden = false;
+  } catch (e) {
+    $('startErr').textContent = `カメラを起動できません: ${e.name} ${e.message}`;
+  }
+};
+$('quality').onchange = e => applyQuality(e.target.value);
+
+// ---------- 写真(映像フレームを切り出すので無音) ----------
+$('shutter').onclick = () => {
+  const c = document.createElement('canvas');
+  c.width = video.videoWidth; c.height = video.videoHeight;
+  c.getContext('2d').drawImage(video, 0, 0);
+  c.toBlob(b => {
+    photos.push(new File([b], `photo-${stamp()}-${photos.length + 1}.jpg`, { type: 'image/jpeg' }));
+    $('savePhotos').textContent = `写真を保存 (${photos.length})`;
+  }, 'image/jpeg', 0.95);
+  $('flash').style.opacity = 1;
+  setTimeout(() => $('flash').style.opacity = 0, 120);
+};
+
+$('savePhotos').onclick = async () => {
+  if (!photos.length) return;
+  if (await saveFiles(photos)) {
+    photos = [];
+    $('savePhotos').textContent = '写真を保存 (0)';
+  }
+};
+
+// ---------- 保存(iPhoneは共有シートから「保存」) ----------
+async function saveFiles(files) {
+  try {
+    if (navigator.canShare && navigator.canShare({ files })) {
+      await navigator.share({ files });
+      return true;
     }
-  };
-  $('presets').appendChild(b);
+  } catch (e) {
+    if (e.name === 'AbortError') return false;
+  }
+  for (const f of files) {
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(f); a.download = f.name; a.click();
+    setTimeout(() => URL.revokeObjectURL(a.href), 60000);
+  }
+  return true;
 }
 
-$('rec').onclick = async () => {
-  if (!stream) { $('recResult').textContent = '先にいずれかの解像度ボタンで成功させてください'; return; }
-  const types = ['video/mp4;codecs=hvc1', 'video/mp4', 'video/webm'];
-  const mime = types.find(t => MediaRecorder.isTypeSupported(t));
-  const chunks = [];
-  const rec = new MediaRecorder(stream, mime ? { mimeType: mime } : undefined);
-  rec.ondataavailable = e => e.data.size && chunks.push(e.data);
-  rec.onstop = () => {
-    const blob = new Blob(chunks, { type: rec.mimeType });
-    const mbps = (blob.size * 8 / 5 / 1e6).toFixed(1);
-    const s = stream.getVideoTracks()[0].getSettings();
-    $('recResult').textContent =
-      `形式: ${rec.mimeType}\nサイズ: ${(blob.size / 1e6).toFixed(1)} MB\n実ビットレート: 約${mbps} Mbps\n` +
-      `録画時の設定: ${s.width}x${s.height} @ ${s.frameRate}fps`;
+function stamp() {
+  const d = new Date(), p = n => String(n).padStart(2, '0');
+  return `${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}-${p(d.getHours())}${p(d.getMinutes())}${p(d.getSeconds())}`;
+}
+
+// ---------- 録画データの書き込み先 ----------
+// 長時間の4K録画でメモリが溢れないよう、端末内ストレージ(OPFS)に逐次書き込む。使えなければメモリに溜める。
+async function openSink(name) {
+  try {
+    const root = await navigator.storage.getDirectory();
+    for await (const key of root.keys()) if (key.startsWith('rec-')) await root.removeEntry(key);
+    const fh = await root.getFileHandle(name, { create: true });
+    const w = await fh.createWritable();
+    let chain = Promise.resolve();
+    return {
+      write: b => { chain = chain.then(() => w.write(b)); },
+      close: async () => { await chain; await w.close(); return fh.getFile(); },
+    };
+  } catch (e) {
+    const chunks = [];
+    return { write: b => chunks.push(b), close: async () => new Blob(chunks) };
+  }
+}
+
+// ---------- 録画 ----------
+function bitrate() {
+  const s = fmtSettings();
+  return Math.min(60e6, Math.round(s.w * s.h * s.fps * 0.1));
+}
+
+$('recBtn').onclick = async () => {
+  const mime = ['video/mp4;codecs=hvc1', 'video/mp4;codecs=avc1', 'video/mp4', 'video/webm']
+    .find(t => MediaRecorder.isTypeSupported(t)) || '';
+  const ext = mime.includes('webm') ? 'webm' : 'mp4';
+  const name = `rec-${stamp()}.${ext}`;
+  sink = await openSink(name);
+  rec = new MediaRecorder(stream, { mimeType: mime || undefined, videoBitsPerSecond: bitrate() });
+  recMime = rec.mimeType || mime;
+  rec.ondataavailable = e => e.data.size && sink.write(e.data);
+  rec.onstop = async () => {
+    const data = await sink.close();
+    recordedFile = new File([data], name.replace(/^rec-/, 'video-'), { type: recMime.split(';')[0] || 'video/mp4' });
+    showResult();
   };
-  rec.start();
-  $('recResult').textContent = '録画中(5秒)...';
-  setTimeout(() => rec.stop(), 5000);
+  rec.start(1000);
+  recStart = Date.now();
+  $('memoText').value = '';
+  enterBlack();
+  try { wakeLock = await navigator.wakeLock.request('screen'); } catch (e) {}
+};
+
+function stopRecording() {
+  if (!rec || rec.state === 'inactive') return;
+  rec.stop();
+  $('black').style.display = 'none';
+  $('memo').style.display = 'none';
+  if (wakeLock) { wakeLock.release().catch(() => {}); wakeLock = null; }
+}
+
+// アプリを離れるとiOSがカメラを止めるので、それまでの分を確定させる
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden) stopRecording();
+  else if (wakeLock === null && rec && rec.state === 'recording') navigator.wakeLock?.request('screen').then(l => wakeLock = l).catch(() => {});
+});
+
+// ---------- 真っ黒画面: 5回タップでメモ / 10回タップで停止 ----------
+let taps = 0, tapTimer = null, hintTimer = null;
+
+function enterBlack() {
+  $('memo').style.display = 'none';
+  $('black').style.display = 'block';
+}
+
+$('black').addEventListener('pointerdown', e => {
+  e.preventDefault();
+  taps++;
+  const hint = $('tapHint');
+  hint.textContent = taps;
+  hint.style.opacity = 1;
+  clearTimeout(hintTimer);
+  hintTimer = setTimeout(() => hint.style.opacity = 0, 600);
+  clearTimeout(tapTimer);
+  if (taps >= 10) { taps = 0; stopRecording(); return; }
+  // 連続タップが途切れてから判定(10回の途中で5回目に反応しないように)
+  tapTimer = setTimeout(() => {
+    if (taps >= 5) openMemo();
+    taps = 0;
+  }, 800);
+});
+
+function elapsed() {
+  const s = Math.floor((Date.now() - recStart) / 1000);
+  return `${String(Math.floor(s / 60)).padStart(2, '0')}:${String(s % 60).padStart(2, '0')}`;
+}
+
+function openMemo() {
+  const t = $('memoText');
+  const at = elapsed();
+  $('memoTime').textContent = at;
+  t.value += (t.value && !t.value.endsWith('\n') ? '\n' : '') + `[${at}] `;
+  $('black').style.display = 'none';
+  $('memo').style.display = 'flex';
+  t.focus();
+  t.setSelectionRange(t.value.length, t.value.length);
+}
+
+$('memoBack').onclick = () => { $('memoText').blur(); enterBlack(); };
+
+// ---------- 録画後 ----------
+function showResult() {
+  const mb = (recordedFile.size / 1e6).toFixed(1);
+  const s = fmtSettings();
+  $('msg').textContent = `録画しました(${mb} MB)\n${Math.max(s.w, s.h)}×${Math.min(s.w, s.h)} ${s.fps}fps / ${recMime}`;
+  $('saveMemo').style.display = $('memoText').value.trim() ? '' : 'none';
+  $('result').style.display = 'flex';
+}
+
+$('saveVideo').onclick = () => saveFiles([recordedFile]);
+$('saveMemo').onclick = () => saveFiles([new File([$('memoText').value], recordedFile.name.replace(/\.\w+$/, '.txt'), { type: 'text/plain' })]);
+$('closeResult').onclick = () => {
+  if (!confirm('保存していない動画は消えます。カメラに戻りますか?')) return;
+  recordedFile = null;
+  $('result').style.display = 'none';
 };
 </script>
 </body>

@@ -1,0 +1,107 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>カメラ性能チェック</title>
+<style>
+  body { font-family: -apple-system, sans-serif; margin: 0; padding: 16px; background: #111; color: #eee; }
+  video { width: 100%; max-height: 40vh; background: #000; border-radius: 8px; }
+  button { font-size: 16px; padding: 10px 14px; margin: 4px 4px 4px 0; border-radius: 8px; border: 0; background: #2a7; color: #fff; }
+  button:disabled { background: #555; }
+  pre { background: #1c1c1c; padding: 10px; border-radius: 8px; white-space: pre-wrap; word-break: break-all; font-size: 12px; }
+  h2 { font-size: 15px; margin: 16px 0 4px; }
+</style>
+</head>
+<body>
+<h1 style="font-size:18px">カメラ性能チェック</h1>
+<p>画面の指示どおりにボタンを順に押し、下に出る結果をそのまま共有してください。</p>
+
+<video id="v" playsinline muted autoplay></video>
+
+<h2>1. 解像度・フレームレートを試す</h2>
+<div id="presets"></div>
+<pre id="settings">未実行</pre>
+
+<h2>2. 録画して実ビットレートを測る(5秒)</h2>
+<button id="rec">録画テスト</button>
+<pre id="recResult">未実行</pre>
+
+<h2>3. 端末情報</h2>
+<pre id="env"></pre>
+
+<script>
+const $ = id => document.getElementById(id);
+const video = $('v');
+let stream = null;
+
+const presets = [
+  ['1080p30', 1920, 1080, 30],
+  ['1080p60', 1920, 1080, 60],
+  ['4K30', 3840, 2160, 30],
+  ['4K60', 3840, 2160, 60],
+  ['1080p120(スロー)', 1920, 1080, 120],
+  ['1080p240(スロー)', 1920, 1080, 240],
+];
+
+$('env').textContent = [
+  'UA: ' + navigator.userAgent,
+  'MediaRecorder: ' + (typeof MediaRecorder),
+  'ImageCapture: ' + (typeof ImageCapture),
+  ['video/mp4', 'video/mp4;codecs=hvc1', 'video/mp4;codecs=avc1', 'video/webm']
+    .map(t => `  ${t}: ${window.MediaRecorder && MediaRecorder.isTypeSupported(t)}`).join('\n'),
+].join('\n');
+
+async function start(w, h, fps) {
+  if (stream) stream.getTracks().forEach(t => t.stop());
+  // 'exact' にすると、未対応の場合にエラーで分かる
+  stream = await navigator.mediaDevices.getUserMedia({
+    audio: false,
+    video: { facingMode: { ideal: 'environment' },
+             width: { exact: w }, height: { exact: h }, frameRate: { exact: fps } },
+  });
+  video.srcObject = stream;
+  await video.play();
+  const track = stream.getVideoTracks()[0];
+  const s = track.getSettings();
+  const c = track.getCapabilities ? track.getCapabilities() : {};
+  return { settings: s, capabilities: c };
+}
+
+for (const [label, w, h, fps] of presets) {
+  const b = document.createElement('button');
+  b.textContent = label;
+  b.onclick = async () => {
+    $('settings').textContent = `${label} を要求中...`;
+    try {
+      const r = await start(w, h, fps);
+      $('settings').textContent = `${label}: 成功\n` + JSON.stringify(r, null, 1);
+    } catch (e) {
+      $('settings').textContent = `${label}: 失敗 (${e.name}: ${e.message})`;
+    }
+  };
+  $('presets').appendChild(b);
+}
+
+$('rec').onclick = async () => {
+  if (!stream) { $('recResult').textContent = '先にいずれかの解像度ボタンで成功させてください'; return; }
+  const types = ['video/mp4;codecs=hvc1', 'video/mp4', 'video/webm'];
+  const mime = types.find(t => MediaRecorder.isTypeSupported(t));
+  const chunks = [];
+  const rec = new MediaRecorder(stream, mime ? { mimeType: mime } : undefined);
+  rec.ondataavailable = e => e.data.size && chunks.push(e.data);
+  rec.onstop = () => {
+    const blob = new Blob(chunks, { type: rec.mimeType });
+    const mbps = (blob.size * 8 / 5 / 1e6).toFixed(1);
+    const s = stream.getVideoTracks()[0].getSettings();
+    $('recResult').textContent =
+      `形式: ${rec.mimeType}\nサイズ: ${(blob.size / 1e6).toFixed(1)} MB\n実ビットレート: 約${mbps} Mbps\n` +
+      `録画時の設定: ${s.width}x${s.height} @ ${s.frameRate}fps`;
+  };
+  rec.start();
+  $('recResult').textContent = '録画中(5秒)...';
+  setTimeout(() => rec.stop(), 5000);
+};
+</script>
+</body>
+</html>
