@@ -53,6 +53,9 @@
   <div style="font-size:20px">無音カメラ</div>
   <div style="font-size:13px;color:#aaa">シャッター音・録画音は一切鳴りません</div>
   <button class="btn" id="startBtn" style="background:#2a7">カメラを起動</button>
+  <div id="leftover" hidden style="background:#533;padding:12px;border-radius:8px;font-size:13px">
+    中断された録画が残っています<br><button class="btn" id="leftoverBtn" style="margin-top:8px;background:#c52">保存する</button>
+  </div>
   <div id="startErr" style="color:#f88;font-size:13px"></div>
 </div>
 
@@ -78,7 +81,7 @@
 <div id="black"><div id="tapHint"></div></div>
 
 <div id="memo">
-  <header><span>メモ(録画は継続中 <span id="memoTime">00:00</span>)</span>
+  <header><span>メモ(録画は継続中)</span>
     <button class="btn" id="memoBack">戻る</button></header>
   <textarea id="memoText" placeholder="メモを入力"></textarea>
 </div>
@@ -95,7 +98,7 @@ const $ = id => document.getElementById(id);
 const video = $('preview');
 let stream = null;
 let photos = [];
-let rec = null, sink = null, recStart = 0, recMime = '', recordedFile = null;
+let rec = null, cur = null, memChunks = [], recordedFile = null;
 let wakeLock = null;
 
 // ---------- カメラ ----------
@@ -188,24 +191,26 @@ function stamp() {
   return `${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}-${p(d.getHours())}${p(d.getMinutes())}${p(d.getSeconds())}`;
 }
 
-// ---------- 録画データの書き込み先 ----------
-// 長時間の4K録画でメモリが溢れないよう、端末内ストレージ(OPFS)に逐次書き込む。使えなければメモリに溜める。
-async function openSink(name) {
-  try {
-    const root = await navigator.storage.getDirectory();
-    for await (const key of root.keys()) if (key.startsWith('rec-')) await root.removeEntry(key);
-    const fh = await root.getFileHandle(name, { create: true });
-    const w = await fh.createWritable();
-    let chain = Promise.resolve();
-    return {
-      write: b => { chain = chain.then(() => w.write(b)); },
-      close: async () => { await chain; await w.close(); return fh.getFile(); },
-    };
-  } catch (e) {
-    const chunks = [];
-    return { write: b => chunks.push(b), close: async () => new Blob(chunks) };
-  }
+// ---------- 録画データの保存先(端末内DB) ----------
+// 1秒ごとに書き込むので、アプリが落ちても次回起動時にそこまでの録画を復元できる。
+const dbReady = new Promise((res, rej) => {
+  const r = indexedDB.open('silentcam', 1);
+  r.onupgradeneeded = () => { r.result.createObjectStore('chunks'); r.result.createObjectStore('meta'); };
+  r.onsuccess = () => res(r.result);
+  r.onerror = () => rej(r.error);
+});
+
+async function dbDo(store, mode, fn) {
+  const db = await dbReady;
+  return new Promise((res, rej) => {
+    const t = db.transaction(store, mode);
+    const req = fn(t.objectStore(store));
+    t.oncomplete = () => res(req && req.result);
+    t.onerror = t.onabort = () => rej(t.error);
+  });
 }
+
+const chunkRange = sid => IDBKeyRange.bound(`${sid}:`, `${sid}:￿`);
 
 // ---------- 録画 ----------
 function bitrate() {
@@ -217,18 +222,29 @@ $('recBtn').onclick = async () => {
   const mime = ['video/mp4;codecs=hvc1', 'video/mp4;codecs=avc1', 'video/mp4', 'video/webm']
     .find(t => MediaRecorder.isTypeSupported(t)) || '';
   const ext = mime.includes('webm') ? 'webm' : 'mp4';
-  const name = `rec-${stamp()}.${ext}`;
-  sink = await openSink(name);
+  const sid = stamp();
+  const s = fmtSettings();
   rec = new MediaRecorder(stream, { mimeType: mime || undefined, videoBitsPerSecond: bitrate() });
-  recMime = rec.mimeType || mime;
-  rec.ondataavailable = e => e.data.size && sink.write(e.data);
+  cur = { sid, name: `video-${sid}.${ext}`, mime: rec.mimeType || mime, memo: '',
+          info: `${Math.max(s.w, s.h)}×${Math.min(s.w, s.h)} ${s.fps}fps` };
+  memChunks = [];
+  let idx = 0, useMem = false, chain = dbDo('meta', 'readwrite', st => st.put(cur, sid)).catch(() => { useMem = true; });
+  rec.ondataavailable = e => {
+    if (!e.data.size) return;
+    const key = `${sid}:${String(idx++).padStart(8, '0')}`;
+    chain = chain.then(() => useMem ? memChunks.push(e.data)
+      : dbDo('chunks', 'readwrite', st => st.put(e.data, key)).catch(() => { useMem = true; memChunks.push(e.data); }));
+  };
   rec.onstop = async () => {
-    const data = await sink.close();
-    recordedFile = new File([data], name.replace(/^rec-/, 'video-'), { type: recMime.split(';')[0] || 'video/mp4' });
+    await chain;
+    recordedFile = await buildFile();
     showResult();
+    // 停止直後ならそのまま共有シートを開く(iOSが許可しない場合は保存ボタンから)
+    if (!document.hidden && navigator.canShare && navigator.canShare({ files: [recordedFile] })) {
+      navigator.share({ files: [recordedFile] }).catch(() => {});
+    }
   };
   rec.start(1000);
-  recStart = Date.now();
   $('memoText').value = '';
   enterBlack();
   try { wakeLock = await navigator.wakeLock.request('screen'); } catch (e) {}
@@ -247,6 +263,8 @@ document.addEventListener('visibilitychange', () => {
   if (document.hidden) stopRecording();
   else if (wakeLock === null && rec && rec.state === 'recording') navigator.wakeLock?.request('screen').then(l => wakeLock = l).catch(() => {});
 });
+
+window.addEventListener('pagehide', stopRecording);
 
 // ---------- 真っ黒画面: 5回タップでメモ / 10回タップで停止 ----------
 let taps = 0, tapTimer = null, hintTimer = null;
@@ -273,40 +291,69 @@ $('black').addEventListener('pointerdown', e => {
   }, 800);
 });
 
-function elapsed() {
-  const s = Math.floor((Date.now() - recStart) / 1000);
-  return `${String(Math.floor(s / 60)).padStart(2, '0')}:${String(s % 60).padStart(2, '0')}`;
-}
-
 function openMemo() {
-  const t = $('memoText');
-  const at = elapsed();
-  $('memoTime').textContent = at;
-  t.value += (t.value && !t.value.endsWith('\n') ? '\n' : '') + `[${at}] `;
   $('black').style.display = 'none';
   $('memo').style.display = 'flex';
+  const t = $('memoText');
   t.focus();
   t.setSelectionRange(t.value.length, t.value.length);
 }
 
 $('memoBack').onclick = () => { $('memoText').blur(); enterBlack(); };
 
+// メモは入力のたびに端末内へ保存(アプリが落ちても残る)
+let memoTimer = null;
+$('memoText').addEventListener('input', () => {
+  if (!cur) return;
+  clearTimeout(memoTimer);
+  memoTimer = setTimeout(() => {
+    cur.memo = $('memoText').value;
+    dbDo('meta', 'readwrite', s => s.put(cur, cur.sid)).catch(() => {});
+  }, 400);
+});
+
 // ---------- 録画後 ----------
+async function buildFile() {
+  const chunks = await dbDo('chunks', 'readonly', s => s.getAll(chunkRange(cur.sid))).catch(() => []);
+  return new File([...(chunks || []), ...memChunks], cur.name, { type: cur.mime.split(';')[0] || 'video/mp4' });
+}
+
 function showResult() {
   const mb = (recordedFile.size / 1e6).toFixed(1);
-  const s = fmtSettings();
-  $('msg').textContent = `録画しました(${mb} MB)\n${Math.max(s.w, s.h)}×${Math.min(s.w, s.h)} ${s.fps}fps / ${recMime}`;
-  $('saveMemo').style.display = $('memoText').value.trim() ? '' : 'none';
+  $('msg').textContent = `録画を端末内に確保しました(${mb} MB)\n${cur.info || ''}\n\n下のボタンから「ビデオを保存」を選ぶと、写真アプリの「ビデオ」に入ります。`;
+  $('saveMemo').style.display = ($('memoText').value || '').trim() ? '' : 'none';
   $('result').style.display = 'flex';
 }
 
 $('saveVideo').onclick = () => saveFiles([recordedFile]);
-$('saveMemo').onclick = () => saveFiles([new File([$('memoText').value], recordedFile.name.replace(/\.\w+$/, '.txt'), { type: 'text/plain' })]);
-$('closeResult').onclick = () => {
+$('saveMemo').onclick = () => saveFiles([new File([$('memoText').value], cur.name.replace(/\.\w+$/, '.txt'), { type: 'text/plain' })]);
+$('closeResult').onclick = async () => {
   if (!confirm('保存していない動画は消えます。カメラに戻りますか?')) return;
-  recordedFile = null;
+  await dbDo('chunks', 'readwrite', s => s.delete(chunkRange(cur.sid))).catch(() => {});
+  await dbDo('meta', 'readwrite', s => s.delete(cur.sid)).catch(() => {});
+  recordedFile = null; cur = null; memChunks = [];
+  $('memoText').value = '';
   $('result').style.display = 'none';
+  checkLeftover();
 };
+
+// ---------- 前回の録画が残っていたら復元 ----------
+async function checkLeftover() {
+  const box = $('leftover');
+  box.hidden = true;
+  let metas = [];
+  try { metas = await dbDo('meta', 'readonly', s => s.getAll()); } catch (e) {}
+  if (!metas || !metas.length) return;
+  const m = metas[metas.length - 1];
+  box.hidden = false;
+  $('leftoverBtn').onclick = async () => {
+    cur = m; memChunks = [];
+    recordedFile = await buildFile();
+    $('memoText').value = m.memo || '';
+    showResult();
+  };
+}
+checkLeftover();
 </script>
 </body>
 </html>
