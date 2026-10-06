@@ -17,6 +17,7 @@
     font-family: -apple-system, sans-serif; touch-action: manipulation; -webkit-user-select: none; user-select: none; }
   #home { position: fixed; inset: 0; background: #fff; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 24px; padding: 16px; text-align: center; }
   #info { position: fixed; top: calc(env(safe-area-inset-top) + 12px); left: 0; right: 0; font-size: 13px; color: #888; }
+  select { font-size: 16px; color: #000; background: #fff; border: 1px solid #ccc; border-radius: 8px; padding: 8px 10px; }
   #recBtn { width: 96px; height: 96px; border-radius: 50%; border: 0; background: #000; padding: 0; }
   #recBtn:disabled { background: #bbb; }
   .btn { border: 0; border-radius: 999px; font-size: 15px; color: #fff; background: #000; padding: 12px 18px; }
@@ -49,6 +50,13 @@
   <div id="leftover" hidden>
     中断された録画が残っています<br><button class="btn" id="leftoverBtn">保存する</button>
   </div>
+  <select id="quality" aria-label="画質">
+    <option value="auto">自動(最高画質)</option>
+    <option value="3840x2160@60">4K 60fps</option>
+    <option value="3840x2160@30">4K 30fps</option>
+    <option value="1920x1080@60">1080p 60fps</option>
+    <option value="1920x1080@30">1080p 30fps</option>
+  </select>
   <button id="recBtn" aria-label="録画開始" disabled></button>
   <div id="err"></div>
   <button class="btn" id="retry" hidden>カメラを再起動</button>
@@ -83,18 +91,22 @@ function fmtSettings() {
   return { w: s.width, h: s.height, fps: Math.round(s.frameRate || 0) };
 }
 
-// 4K60から順に試し、使える最高の設定を採用する
-async function applyBestQuality() {
+// 自動: 4K60から順に試し、使える最高の設定を採用。手動: 選んだ設定だけ試す
+async function applyQuality() {
+  const v = $('quality').value;
+  const list = v === 'auto' ? CANDIDATES : [v.split(/[x@]/).map(Number)];
   const track = stream.getVideoTracks()[0];
-  let best = null;
-  for (const [w, h, fps] of CANDIDATES) {
+  for (const [w, h, fps] of list) {
     try {
       await track.applyConstraints({ width: { ideal: w }, height: { ideal: h }, frameRate: { ideal: fps } });
     } catch (e) { continue; }
     const s = fmtSettings();
-    if (Math.max(s.w, s.h) >= w && s.fps >= fps - 1) return;
-    if (!best || s.w * s.h * s.fps > best.w * best.h * best.fps) best = { ...s, w, h, fps };
+    if (Math.max(s.w, s.h) >= w && s.fps >= fps - 1) break;
   }
+  const s = fmtSettings();
+  const want = list[0];
+  const note = v !== 'auto' && (Math.max(s.w, s.h) < want[0] || s.fps < want[2] - 1) ? '(この設定は使えませんでした)' : '';
+  $('info').textContent = `${Math.max(s.w, s.h)}×${Math.min(s.w, s.h)} ${s.fps}fps${note}`;
 }
 
 async function startCamera() {
@@ -108,9 +120,7 @@ async function startCamera() {
       video: { facingMode: { ideal: 'environment' }, width: { ideal: 3840 }, height: { ideal: 2160 }, frameRate: { ideal: 60 } },
       audio: false,
     });
-    await applyBestQuality();
-    const s = fmtSettings();
-    $('info').textContent = `${Math.max(s.w, s.h)}×${Math.min(s.w, s.h)} ${s.fps}fps`;
+    await applyQuality();
     $('recBtn').disabled = false;
   } catch (e) {
     $('info').textContent = '';
@@ -119,6 +129,11 @@ async function startCamera() {
   }
 }
 $('retry').onclick = startCamera;
+try { const q = localStorage.getItem('quality'); if (q) $('quality').value = q; } catch (e) {}
+$('quality').onchange = async () => {
+  try { localStorage.setItem('quality', $('quality').value); } catch (e) {}
+  if (stream) { $('recBtn').disabled = true; await applyQuality(); $('recBtn').disabled = false; }
+};
 startCamera();
 
 // ---------- 保存(iPhoneは共有シートから「保存」) ----------
