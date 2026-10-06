@@ -131,6 +131,8 @@ async function startCamera() {
   $('info').textContent = 'カメラ準備中...';
   try {
     const ok = await openCamera();
+    // ライト(トーチ)は明示的に消灯しておく
+    await stream.getVideoTracks()[0].applyConstraints({ advanced: [{ torch: false }] }).catch(() => {});
     const s = fmtSettings();
     let text = `${Math.max(s.w, s.h)}×${Math.min(s.w, s.h)} ${s.fps}fps${ok ? '' : '(選んだ設定は使えませんでした)'}`;
     const c = stream.getVideoTracks()[0].getCapabilities?.();
