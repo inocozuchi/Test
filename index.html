@@ -37,7 +37,17 @@
   #memo { position: fixed; inset: 0; background: #fff; color: #000; display: none; z-index: 20;
     padding: calc(env(safe-area-inset-top) + 12px) 16px calc(env(safe-area-inset-bottom) + 12px);
     flex-direction: column; gap: 8px; -webkit-user-select: text; user-select: text; }
-  #memo header { display: flex; justify-content: flex-end; }
+  #memo header { display: flex; justify-content: space-between; }
+  #memo .btn.sub { background: #666; }
+
+  /* 写真・動画ビューア(録画中に見る用。背景は黒) */
+  #viewer { position: fixed; inset: 0; background: #000; color: #fff; display: none; z-index: 25;
+    padding: calc(env(safe-area-inset-top) + 12px) 12px calc(env(safe-area-inset-bottom) + 12px);
+    flex-direction: column; gap: 8px; }
+  #viewer header { display: flex; justify-content: space-between; }
+  #viewer .btn { background: #333; }
+  #viewerBody { flex: 1; min-height: 0; display: flex; align-items: center; justify-content: center; }
+  #viewerBody video, #viewerBody img { max-width: 100%; max-height: 100%; }
   #memoText { flex: 1; width: 100%; font-size: 17px; border: 1px solid #ccc; border-radius: 8px; padding: 10px; color: #000; background: #fff; resize: none; }
 
   /* 保存画面 */
@@ -58,8 +68,8 @@
   <select id="quality" aria-label="画質">
     <option value="auto">自動(最高画質)</option>
     <option value="3840x2160@60">4K 60fps</option>
-    <option value="1920x1080@60">1080p 60fps(おすすめ)</option>
-    <option value="3840x2160@30">4K 30fps(実測は約20fpsに低下)</option>
+    <option value="1920x1080@60">1080p 60fps(滑らか・発熱少なめ)</option>
+    <option value="3840x2160@30">4K 30fps(高精細・発熱大きめ)</option>
     <option value="1920x1080@30">1080p 30fps</option>
   </select>
   <button id="recBtn" aria-label="録画開始"></button>
@@ -69,8 +79,15 @@
 <div id="black"><div id="tapHint"></div></div>
 
 <div id="memo">
-  <header><button class="btn" id="memoBack">戻る</button></header>
+  <header><button class="btn sub" id="openViewer">写真・動画を見る</button><button class="btn" id="memoBack">戻る</button></header>
   <textarea id="memoText" placeholder="メモを入力"></textarea>
+</div>
+
+<input type="file" id="pick" accept="image/*,video/*" style="position:fixed;left:-9999px;opacity:0">
+
+<div id="viewer">
+  <header><button class="btn" id="viewerPick">別のファイル</button><button class="btn" id="viewerBack">戻る</button></header>
+  <div id="viewerBody"></div>
 </div>
 
 <div id="result">
@@ -270,6 +287,8 @@ function setTheme(dark) {
 function stopRecording() {
   if (!rec || rec.state === 'inactive') return;
   rec.stop();
+  closeMedia();
+  $('viewer').style.display = 'none';
   setTheme(false);
   $('black').style.display = 'none';
   $('memo').style.display = 'none';
@@ -320,6 +339,39 @@ function openMemo() {
 }
 
 $('memoBack').onclick = () => { $('memoText').blur(); enterBlack(); };
+
+// ---------- 録画中に写真・動画を見る ----------
+let viewerURL = null;
+
+function closeMedia() {
+  const v = $('viewerBody').querySelector('video');
+  if (v) { v.pause(); v.removeAttribute('src'); v.load(); }
+  $('viewerBody').replaceChildren();
+  if (viewerURL) { URL.revokeObjectURL(viewerURL); viewerURL = null; }
+}
+
+$('openViewer').onclick = () => $('pick').click();
+$('viewerPick').onclick = () => $('pick').click();
+$('pick').onchange = () => {
+  const f = $('pick').files[0];
+  $('pick').value = '';
+  if (!f) return;
+  closeMedia();
+  viewerURL = URL.createObjectURL(f);
+  const isVideo = f.type.startsWith('video') || /\.(mov|mp4|m4v|webm)$/i.test(f.name);
+  const el = document.createElement(isVideo ? 'video' : 'img');
+  el.src = viewerURL;
+  if (isVideo) { el.controls = true; el.playsInline = true; el.muted = true; }  // 音は初期状態でミュート
+  $('viewerBody').replaceChildren(el);
+  setTheme(true);
+  $('memo').style.display = 'none';
+  $('viewer').style.display = 'flex';
+};
+$('viewerBack').onclick = () => {
+  closeMedia();
+  $('viewer').style.display = 'none';
+  enterBlack();
+};
 
 // メモは入力のたびに端末内へ保存(アプリが落ちても残る)
 let memoTimer = null;
