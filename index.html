@@ -106,7 +106,7 @@ async function startCamera() {
     if (stream) stream.getTracks().forEach(t => t.stop());
     stream = await navigator.mediaDevices.getUserMedia({
       video: { facingMode: { ideal: 'environment' }, width: { ideal: 3840 }, height: { ideal: 2160 }, frameRate: { ideal: 60 } },
-      audio: true,
+      audio: false,
     });
     await applyBestQuality();
     const s = fmtSettings();
