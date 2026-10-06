@@ -230,9 +230,11 @@ $('recBtn').onclick = async () => {
   };
   rec.onerror = () => stopRecording();
   // 着信や発熱などでiOSがカメラを止めた場合も、そこまでの分を確定させる
-  stream.getVideoTracks()[0].onended = () => stopRecording();
+  const track = stream.getVideoTracks()[0];
+  track.onended = () => stopRecording();
   rec.onstop = async () => {
     await chain;
+    stopStream();  // 保存画面ではカメラを止めて、電池と発熱を節約する
     recordedFile = await buildFile();
     showResult();
     // 停止直後ならそのまま共有シートを開く(iOSが許可しない場合は保存ボタンから)
