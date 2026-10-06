@@ -48,7 +48,7 @@
 </head>
 <body>
 <div id="home">
-  <div id="info">カメラ準備中...</div>
+  <div id="info">画質を選んで、録画ボタンを押してください</div>
   <div id="leftover" hidden>
     中断された録画が残っています<br><button class="btn" id="leftoverBtn">保存する</button>
   </div>
@@ -59,9 +59,8 @@
     <option value="1920x1080@60">1080p 60fps</option>
     <option value="1920x1080@30">1080p 30fps</option>
   </select>
-  <button id="recBtn" aria-label="録画開始" disabled></button>
+  <button id="recBtn" aria-label="録画開始"></button>
   <div id="err"></div>
-  <button class="btn" id="retry" hidden>カメラを再起動</button>
 </div>
 
 <div id="black"><div id="tapHint"></div></div>
@@ -124,34 +123,21 @@ async function openCamera() {
   return v === 'auto';
 }
 
-async function startCamera() {
-  $('err').textContent = '';
-  $('retry').hidden = true;
-  $('recBtn').disabled = true;
-  $('info').textContent = 'カメラ準備中...';
-  try {
-    const ok = await openCamera();
-    // ライト(トーチ)は明示的に消灯しておく
-    await stream.getVideoTracks()[0].applyConstraints({ advanced: [{ torch: false }] }).catch(() => {});
-    const s = fmtSettings();
-    let text = `${Math.max(s.w, s.h)}×${Math.min(s.w, s.h)} ${s.fps}fps${ok ? '' : '(選んだ設定は使えませんでした)'}`;
-    const c = stream.getVideoTracks()[0].getCapabilities?.();
-    if (c && c.width && c.frameRate) text += `\nこのブラウザで使える上限: ${c.width.max}×${c.height.max} / ${Math.round(c.frameRate.max)}fps`;
-    $('info').textContent = text;
-    $('recBtn').disabled = false;
-  } catch (e) {
-    $('info').textContent = '';
-    $('err').textContent = `カメラを起動できません: ${e.name} ${e.message}`;
-    $('retry').hidden = false;
-  }
+// 録画ボタンを押した時にだけカメラを起動する(待機中は電池を使わない)
+async function prepareCamera() {
+  const ok = await openCamera();
+  // ライト(トーチ)は明示的に消灯しておく
+  await stream.getVideoTracks()[0].applyConstraints({ advanced: [{ torch: false }] }).catch(() => {});
+  const s = fmtSettings();
+  let text = `${Math.max(s.w, s.h)}×${Math.min(s.w, s.h)} ${s.fps}fps${ok ? '' : '(選んだ設定は使えませんでした)'}`;
+  const c = stream.getVideoTracks()[0].getCapabilities?.();
+  if (c && c.width && c.frameRate) text += `\nこのブラウザで使える上限: ${c.width.max}×${c.height.max} / ${Math.round(c.frameRate.max)}fps`;
+  return text;
 }
-$('retry').onclick = startCamera;
 try { const q = localStorage.getItem('quality'); if (q) $('quality').value = q; } catch (e) {}
-$('quality').onchange = async () => {
+$('quality').onchange = () => {
   try { localStorage.setItem('quality', $('quality').value); } catch (e) {}
-  startCamera();
 };
-startCamera();
 // 長時間録画中にブラウザが端末内データを消さないよう、永続化を要求
 navigator.storage?.persist?.().catch(() => {});
 
@@ -208,6 +194,21 @@ function bitrate(mime) {
 }
 
 $('recBtn').onclick = async () => {
+  $('err').textContent = '';
+  $('recBtn').disabled = true;
+  $('info').textContent = 'カメラ起動中...';
+  let camInfo;
+  try {
+    camInfo = await prepareCamera();
+  } catch (e) {
+    stopStream();
+    $('info').textContent = '画質を選んで、録画ボタンを押してください';
+    $('err').textContent = `カメラを起動できません: ${e.name} ${e.message}`;
+    $('recBtn').disabled = false;
+    return;
+  }
+  $('recBtn').disabled = false;
+  $('info').textContent = '画質を選んで、録画ボタンを押してください';
   const mime = ['video/mp4;codecs=hvc1', 'video/mp4;codecs=avc1', 'video/mp4', 'video/webm']
     .find(t => MediaRecorder.isTypeSupported(t)) || '';
   const ext = mime.includes('webm') ? 'webm' : 'mp4';
@@ -215,7 +216,7 @@ $('recBtn').onclick = async () => {
   const s = fmtSettings();
   rec = new MediaRecorder(stream, { mimeType: mime || undefined, videoBitsPerSecond: bitrate(mime) });
   cur = { sid, name: `video-${sid}.${ext}`, mime: rec.mimeType || mime, memo: '',
-          info: `${Math.max(s.w, s.h)}×${Math.min(s.w, s.h)} ${s.fps}fps` };
+          info: camInfo };
   memChunks = [];
   // 端末内DBが最初から使えない場合だけメモリに溜める。途中で書けなくなったら(容量不足など)そこで録画を止める
   let idx = 0, useMem = false, chain = dbDo('meta', 'readwrite', st => st.put(cur, sid)).catch(() => { useMem = true; });
@@ -260,7 +261,6 @@ function stopRecording() {
 // アプリを離れるとiOSがカメラを止めるので、それまでの分を確定させる
 document.addEventListener('visibilitychange', () => {
   if (document.hidden) stopRecording();
-  else if (!rec || rec.state === 'inactive') { if (!stream || stream.getTracks().some(t => t.readyState === 'ended')) startCamera(); }
   else if (wakeLock === null && rec && rec.state === 'recording') navigator.wakeLock?.request('screen').then(l => wakeLock = l).catch(() => {});
 });
 
@@ -336,7 +336,6 @@ $('closeResult').onclick = async () => {
   $('memoText').value = '';
   $('result').style.display = 'none';
   checkLeftover();
-  if (!stream || stream.getTracks().some(t => t.readyState === 'ended')) startCamera();
 };
 
 // ---------- 前回の録画が残っていたら復元 ----------
