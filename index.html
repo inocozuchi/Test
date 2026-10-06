@@ -16,7 +16,7 @@
   html, body { margin: 0; height: 100%; background: #fff; color: #000; overflow: hidden;
     font-family: -apple-system, sans-serif; touch-action: manipulation; -webkit-user-select: none; user-select: none; }
   #home { position: fixed; inset: 0; background: #fff; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 24px; padding: 16px; text-align: center; }
-  #info { position: fixed; top: calc(env(safe-area-inset-top) + 12px); left: 0; right: 0; font-size: 13px; color: #888; }
+  #info { position: fixed; top: calc(env(safe-area-inset-top) + 12px); left: 0; right: 0; font-size: 13px; color: #888; white-space: pre-line; line-height: 1.6; }
   select { font-size: 16px; color: #000; background: #fff; border: 1px solid #ccc; border-radius: 8px; padding: 8px 10px; }
   #recBtn { width: 96px; height: 96px; border-radius: 50%; border: 0; background: #000; padding: 0; }
   #recBtn:disabled { background: #bbb; }
@@ -26,14 +26,16 @@
   #leftoverBtn { margin-top: 8px; background: #c52; }
 
   /* 録画中の真っ黒画面 */
-  #black { position: fixed; inset: 0; background: #000; display: none; z-index: 10; }
+  /* 画面の端(ホームバーやSafariのツールバー周り)まで黒くするため、録画中はページ全体の背景も黒にする */
+  html.recording, html.recording body { background: #000; }
+  #black { position: fixed; top: 0; left: 0; width: 100vw; height: 100lvh; background: #000; display: none; z-index: 10; touch-action: none; }
   #tapHint { position: absolute; left: 50%; bottom: 40px; transform: translateX(-50%); color: #222; font-size: 14px; opacity: 0; transition: opacity .3s; }
 
   /* メモ画面(白背景) */
   #memo { position: fixed; inset: 0; background: #fff; color: #000; display: none; z-index: 20;
     padding: calc(env(safe-area-inset-top) + 12px) 16px calc(env(safe-area-inset-bottom) + 12px);
     flex-direction: column; gap: 8px; -webkit-user-select: text; user-select: text; }
-  #memo header { display: flex; justify-content: space-between; align-items: center; font-size: 14px; color: #555; }
+  #memo header { display: flex; justify-content: flex-end; }
   #memoText { flex: 1; width: 100%; font-size: 17px; border: 1px solid #ccc; border-radius: 8px; padding: 10px; color: #000; background: #fff; resize: none; }
 
   /* 保存画面 */
@@ -65,8 +67,7 @@
 <div id="black"><div id="tapHint"></div></div>
 
 <div id="memo">
-  <header><span>メモ(録画は継続中)</span>
-    <button class="btn" id="memoBack">戻る</button></header>
+  <header><button class="btn" id="memoBack">戻る</button></header>
   <textarea id="memoText" placeholder="メモを入力"></textarea>
 </div>
 
@@ -91,22 +92,36 @@ function fmtSettings() {
   return { w: s.width, h: s.height, fps: Math.round(s.frameRate || 0) };
 }
 
-// 自動: 4K60から順に試し、使える最高の設定を採用。手動: 選んだ設定だけ試す
-async function applyQuality() {
+function stopStream() {
+  if (stream) stream.getTracks().forEach(t => t.stop());
+  stream = null;
+}
+
+// frameRate を min で指定し、そのフレームレートを出せない場合は失敗させる
+async function tryOpen(w, h, fps) {
+  stopStream();
+  stream = await navigator.mediaDevices.getUserMedia({
+    audio: false,
+    video: { facingMode: { ideal: 'environment' }, width: { ideal: w }, height: { ideal: h }, frameRate: { min: fps - 1, ideal: fps } },
+  });
+  const s = fmtSettings();
+  return Math.max(s.w, s.h) >= w;
+}
+
+// 自動: 4K60から順に試し、解像度とフレームレートの両方を満たした最初の設定を使う。手動: 選んだ設定だけ試す
+async function openCamera() {
   const v = $('quality').value;
   const list = v === 'auto' ? CANDIDATES : [v.split(/[x@]/).map(Number)];
-  const track = stream.getVideoTracks()[0];
   for (const [w, h, fps] of list) {
-    try {
-      await track.applyConstraints({ width: { ideal: w }, height: { ideal: h }, frameRate: { ideal: fps } });
-    } catch (e) { continue; }
-    const s = fmtSettings();
-    if (Math.max(s.w, s.h) >= w && s.fps >= fps - 1) break;
+    try { if (await tryOpen(w, h, fps)) return true; } catch (e) {}
   }
-  const s = fmtSettings();
-  const want = list[0];
-  const note = v !== 'auto' && (Math.max(s.w, s.h) < want[0] || s.fps < want[2] - 1) ? '(この設定は使えませんでした)' : '';
-  $('info').textContent = `${Math.max(s.w, s.h)}×${Math.min(s.w, s.h)} ${s.fps}fps${note}`;
+  stopStream();
+  const [w, h, fps] = list[0];
+  stream = await navigator.mediaDevices.getUserMedia({
+    audio: false,
+    video: { facingMode: { ideal: 'environment' }, width: { ideal: w }, height: { ideal: h }, frameRate: { ideal: fps } },
+  });
+  return v === 'auto';
 }
 
 async function startCamera() {
@@ -115,12 +130,12 @@ async function startCamera() {
   $('recBtn').disabled = true;
   $('info').textContent = 'カメラ準備中...';
   try {
-    if (stream) stream.getTracks().forEach(t => t.stop());
-    stream = await navigator.mediaDevices.getUserMedia({
-      video: { facingMode: { ideal: 'environment' }, width: { ideal: 3840 }, height: { ideal: 2160 }, frameRate: { ideal: 60 } },
-      audio: false,
-    });
-    await applyQuality();
+    const ok = await openCamera();
+    const s = fmtSettings();
+    let text = `${Math.max(s.w, s.h)}×${Math.min(s.w, s.h)} ${s.fps}fps${ok ? '' : '(選んだ設定は使えませんでした)'}`;
+    const c = stream.getVideoTracks()[0].getCapabilities?.();
+    if (c && c.width && c.frameRate) text += `\nこのブラウザで使える上限: ${c.width.max}×${c.height.max} / ${Math.round(c.frameRate.max)}fps`;
+    $('info').textContent = text;
     $('recBtn').disabled = false;
   } catch (e) {
     $('info').textContent = '';
@@ -132,9 +147,11 @@ $('retry').onclick = startCamera;
 try { const q = localStorage.getItem('quality'); if (q) $('quality').value = q; } catch (e) {}
 $('quality').onchange = async () => {
   try { localStorage.setItem('quality', $('quality').value); } catch (e) {}
-  if (stream) { $('recBtn').disabled = true; await applyQuality(); $('recBtn').disabled = false; }
+  startCamera();
 };
 startCamera();
+// 長時間録画中にブラウザが端末内データを消さないよう、永続化を要求
+navigator.storage?.persist?.().catch(() => {});
 
 // ---------- 保存(iPhoneは共有シートから「保存」) ----------
 async function saveFiles(files) {
@@ -181,9 +198,11 @@ async function dbDo(store, mode, fn) {
 const chunkRange = sid => IDBKeyRange.bound(`${sid}:`, `${sid}:￿`);
 
 // ---------- 録画 ----------
-function bitrate() {
+// 純正カメラと同程度のビットレート(HEVCはH.264の約半分で同等画質)
+function bitrate(mime) {
   const s = fmtSettings();
-  return Math.min(60e6, Math.round(s.w * s.h * s.fps * 0.1));
+  const k = mime.includes('hvc1') ? 0.1 : 0.18;
+  return Math.min(60e6, Math.round(s.w * s.h * s.fps * k));
 }
 
 $('recBtn').onclick = async () => {
@@ -192,17 +211,24 @@ $('recBtn').onclick = async () => {
   const ext = mime.includes('webm') ? 'webm' : 'mp4';
   const sid = stamp();
   const s = fmtSettings();
-  rec = new MediaRecorder(stream, { mimeType: mime || undefined, videoBitsPerSecond: bitrate() });
+  rec = new MediaRecorder(stream, { mimeType: mime || undefined, videoBitsPerSecond: bitrate(mime) });
   cur = { sid, name: `video-${sid}.${ext}`, mime: rec.mimeType || mime, memo: '',
           info: `${Math.max(s.w, s.h)}×${Math.min(s.w, s.h)} ${s.fps}fps` };
   memChunks = [];
+  // 端末内DBが最初から使えない場合だけメモリに溜める。途中で書けなくなったら(容量不足など)そこで録画を止める
   let idx = 0, useMem = false, chain = dbDo('meta', 'readwrite', st => st.put(cur, sid)).catch(() => { useMem = true; });
   rec.ondataavailable = e => {
     if (!e.data.size) return;
     const key = `${sid}:${String(idx++).padStart(8, '0')}`;
     chain = chain.then(() => useMem ? memChunks.push(e.data)
-      : dbDo('chunks', 'readwrite', st => st.put(e.data, key)).catch(() => { useMem = true; memChunks.push(e.data); }));
+      : dbDo('chunks', 'readwrite', st => st.put(e.data, key)).catch(() => {
+          cur.note = '端末の空き容量が足りなくなったため、録画を停止しました。';
+          stopRecording();
+        }));
   };
+  rec.onerror = () => stopRecording();
+  // 着信や発熱などでiOSがカメラを止めた場合も、そこまでの分を確定させる
+  stream.getVideoTracks()[0].onended = () => stopRecording();
   rec.onstop = async () => {
     await chain;
     recordedFile = await buildFile();
@@ -221,6 +247,7 @@ $('recBtn').onclick = async () => {
 function stopRecording() {
   if (!rec || rec.state === 'inactive') return;
   rec.stop();
+  document.documentElement.classList.remove('recording');
   $('black').style.display = 'none';
   $('memo').style.display = 'none';
   if (wakeLock) { wakeLock.release().catch(() => {}); wakeLock = null; }
@@ -239,6 +266,7 @@ window.addEventListener('pagehide', stopRecording);
 let taps = 0, tapTimer = null, hintTimer = null;
 
 function enterBlack() {
+  document.documentElement.classList.add('recording');
   $('memo').style.display = 'none';
   $('black').style.display = 'block';
 }
@@ -289,7 +317,7 @@ async function buildFile() {
 
 function showResult() {
   const mb = (recordedFile.size / 1e6).toFixed(1);
-  $('msg').textContent = `録画を端末内に確保しました(${mb} MB)\n${cur.info || ''}\n\n下のボタンから「ビデオを保存」を選ぶと、写真アプリの「ビデオ」に入ります。`;
+  $('msg').textContent = `${cur.note ? cur.note + '\n' : ''}録画を端末内に確保しました(${mb} MB)\n${cur.info || ''}\n\n下のボタンから「ビデオを保存」を選ぶと、写真アプリの「ビデオ」に入ります。`;
   $('saveMemo').style.display = ($('memoText').value || '').trim() ? '' : 'none';
   $('result').style.display = 'flex';
 }
