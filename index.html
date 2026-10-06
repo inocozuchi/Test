@@ -15,18 +15,25 @@
   * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
   html, body { margin: 0; height: 100%; background: #fff; color: #000; overflow: hidden;
     font-family: -apple-system, sans-serif; touch-action: manipulation; -webkit-user-select: none; user-select: none; }
-  #home { position: fixed; inset: 0; background: #fff; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 24px; padding: 16px; text-align: center; }
+  #home { position: fixed; inset: 0; background: #fff; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 24px; padding: 16px; text-align: center; overflow: auto; }
   #info { position: fixed; top: calc(env(safe-area-inset-top) + 12px); left: 0; right: 0; font-size: 13px; color: #888; white-space: pre-line; line-height: 1.6; }
   select { font-size: 16px; color: #000; background: #fff; border: 1px solid #ccc; border-radius: 8px; padding: 8px 10px; }
-  #recBtn { width: 96px; height: 96px; border-radius: 50%; border: 0; background: #000; padding: 0; }
+  #recBtn { width: 96px; height: 96px; border-radius: 50%; border: 0; background: #000; padding: 0; flex: none; }
   #recBtn:disabled { background: #bbb; }
   .btn { border: 0; border-radius: 999px; font-size: 15px; color: #fff; background: #000; padding: 12px 18px; }
   .btn:disabled { opacity: .4; }
+  .btn.sub { background: #888; }
+  .btn.small { font-size: 13px; padding: 8px 12px; }
   #err { color: #c22; font-size: 13px; }
-  /* ステータスバー(時刻など)の背後を黒にして、白い画面でも文字が読めて、ぼやけの帯が出ないようにする */
-  #topcap { position: fixed; top: 0; left: 0; right: 0; height: env(safe-area-inset-top); background: #000; z-index: 50; pointer-events: none; }
-  #leftover { background: #fee; padding: 12px; border-radius: 8px; font-size: 13px; }
-  #leftoverBtn { margin-top: 8px; background: #c52; }
+  /* ホーム画面に追加して全画面で開いたときだけ、ステータスバー(白文字)の背後を黒にする。Safariのタブ内では出さない */
+  #topcap { position: fixed; top: 0; left: 0; right: 0; height: env(safe-area-inset-top); background: #000; z-index: 50; pointer-events: none; display: none; }
+  html.standalone #topcap { display: block; }
+
+  /* 端末内に残っている録画の一覧 */
+  #stored { background: #f4f4f4; padding: 12px; border-radius: 12px; font-size: 13px; width: 100%; max-width: 360px; }
+  #stored .title { font-weight: 600; margin-bottom: 8px; }
+  .srow { display: flex; align-items: center; gap: 6px; padding: 6px 0; border-top: 1px solid #ddd; }
+  .srow span { flex: 1; text-align: left; }
 
   /* 録画中の真っ黒画面 */
   /* 画面の端(ホームバーやSafariのツールバー周り)まで黒くするため、録画中はページ全体の背景も黒にする */
@@ -43,17 +50,18 @@
   #memo .btn.sub { background: #666; }
   #memoText { flex: 1; width: 100%; font-size: 17px; border: 1px solid #ccc; border-radius: 8px; padding: 10px; color: #000; background: #fff; resize: none; }
 
-  /* 写真・動画・資料ビューア(録画中に見る用。背景は黒) */
-  #viewer { position: fixed; inset: 0; background: #000; color: #fff; display: none; z-index: 25;
-    padding: calc(env(safe-area-inset-top) + 8px) 0 env(safe-area-inset-bottom);
-    flex-direction: column; }
-  #viewer header { display: flex; gap: 6px; align-items: center; padding: 0 8px 8px; }
-  #viewer header .spacer { flex: 1; text-align: center; font-size: 13px; color: #aaa; white-space: nowrap; overflow: hidden; }
-  .vbtn { border: 0; border-radius: 999px; font-size: 14px; color: #fff; background: #333; padding: 9px 12px; white-space: nowrap; }
+  /* 写真・動画・資料ビューア(録画中に見る用)。表示領域は画面全体で、ボタンは上に重ねる。1回タップでボタンを隠す */
+  #viewer { position: fixed; inset: 0; background: #000; color: #fff; display: none; z-index: 25; }
+  #viewer header { position: absolute; top: 0; left: 0; right: 0; z-index: 2; display: flex; gap: 6px; align-items: center;
+    padding: calc(env(safe-area-inset-top) + 8px) 8px 16px; background: linear-gradient(rgba(0,0,0,.75), rgba(0,0,0,0)); transition: opacity .2s; }
+  #viewer.bare header { opacity: 0; pointer-events: none; }
+  #viewer header .spacer { flex: 1; text-align: center; font-size: 13px; color: #ccc; white-space: nowrap; overflow: hidden; }
+  .vbtn { border: 0; border-radius: 999px; font-size: 14px; color: #fff; background: rgba(60,60,60,.85); padding: 9px 12px; white-space: nowrap; }
   .vbtn.on { background: #fff; color: #000; }
   /* 拡大・スクロールは自前で処理する(ブラウザ自体の拡大は止める) */
-  #viewerBody { flex: 1; min-height: 0; overflow: auto; -webkit-overflow-scrolling: touch; display: flex; position: relative; touch-action: pan-x pan-y; }
+  #viewerBody { position: absolute; inset: 0; overflow: auto; -webkit-overflow-scrolling: touch; display: flex; touch-action: pan-x pan-y; }
   #vContent { margin: auto; flex: none; }
+  #vContent.pdf { padding: calc(env(safe-area-inset-top) + 60px) 0 env(safe-area-inset-bottom); }
   #vContent img, #vContent video { display: block; width: 100%; height: auto; }
   #vContent canvas { display: block; width: 100%; background: #fff; margin: 0 auto 8px; }
   #vContent.invert { filter: invert(1) hue-rotate(180deg); }
@@ -61,21 +69,31 @@
 
   /* 保存画面 */
   #result { position: fixed; inset: 0; background: #fff; display: none; z-index: 30; flex-direction: column;
-    align-items: center; justify-content: center; gap: 12px; padding: 16px; text-align: center; overflow: auto; }
-  #result .btn { width: 100%; max-width: 320px; flex: none; }
-  #result .btn.sub { background: #888; }
+    align-items: center; gap: 12px; padding: calc(env(safe-area-inset-top) + 24px) 16px calc(env(safe-area-inset-bottom) + 24px); text-align: center; overflow: auto; }
+  #result > * { flex: none; }
+  #result .btn { width: 100%; max-width: 320px; }
   #result .btn.done { background: #2a7; }
-  #parts { display: flex; flex-direction: column; align-items: center; gap: 10px; width: 100%; }
-  #msg { font-size: 14px; color: #444; white-space: pre-wrap; }
+  #files { display: flex; flex-direction: column; align-items: center; gap: 16px; width: 100%; }
+  .fileBox { width: 100%; max-width: 340px; display: flex; flex-direction: column; align-items: center; gap: 8px; padding: 12px; border: 1px solid #ddd; border-radius: 12px; }
+  .fileBox .name { font-size: 13px; color: #555; }
+  .note { font-size: 12px; color: #666; white-space: pre-wrap; text-align: left; }
+  #msg { font-size: 14px; color: #444; white-space: pre-wrap; margin-top: auto; }
   #saveErr { font-size: 13px; color: #c22; white-space: pre-wrap; }
+  #resultEnd { margin-bottom: auto; display: flex; flex-direction: column; align-items: center; gap: 10px; width: 100%; }
+
+  /* 読み込み中の表示 */
+  #busy { position: fixed; inset: 0; z-index: 60; background: rgba(255,255,255,.92); display: none; flex-direction: column; align-items: center; justify-content: center; gap: 16px; padding: 24px; text-align: center; font-size: 15px; color: #333; white-space: pre-line; }
+  .spinner { width: 40px; height: 40px; border: 4px solid #ddd; border-top-color: #000; border-radius: 50%; animation: spin 1s linear infinite; }
+  @keyframes spin { to { transform: rotate(360deg); } }
 </style>
 </head>
 <body>
 <div id="topcap"></div>
 <div id="home">
   <div id="info">画質を選んで、録画ボタンを押してください</div>
-  <div id="leftover" hidden>
-    中断された録画が残っています<br><button class="btn" id="leftoverBtn">保存する</button>
+  <div id="stored" hidden>
+    <div class="title">端末内に残っている録画</div>
+    <div id="storedList"></div>
   </div>
   <select id="quality" aria-label="画質">
     <option value="auto">自動(最高画質)</option>
@@ -103,6 +121,7 @@
 <input type="file" id="pick" accept="image/*,video/*,application/pdf" style="position:fixed;left:-9999px;opacity:0">
 
 <div id="viewer">
+  <div id="viewerBody"><div id="vContent"></div></div>
   <header>
     <button class="vbtn" id="viewerBack">戻る</button>
     <span class="spacer" id="vPage"></span>
@@ -110,16 +129,20 @@
     <button class="vbtn" id="vFit">全体</button>
     <button class="vbtn" id="viewerPick">開く</button>
   </header>
-  <div id="viewerBody"><div id="vContent"></div></div>
 </div>
 
 <div id="result">
   <div id="msg"></div>
-  <div id="parts"></div>
+  <div id="files"></div>
   <div id="saveErr"></div>
-  <button class="btn" id="saveMemo">メモを保存</button>
-  <button class="btn sub" id="closeResult">カメラに戻る</button>
+  <div id="resultEnd">
+    <button class="btn sub" id="saveMemo">メモを保存</button>
+    <button class="btn" id="deleteAndBack" style="background:#c33">保存できたので削除して戻る</button>
+    <button class="btn sub" id="keepAndBack">残したまま戻る</button>
+  </div>
 </div>
+
+<div id="busy"><div class="spinner"></div><div id="busyText"></div></div>
 
 <script>
 const $ = id => document.getElementById(id);
@@ -127,7 +150,14 @@ let stream = null, wakeLock = null;
 let session = null;  // 録画中の状態
 let rec = null;      // いま動いている MediaRecorder
 let cur = null;      // 録画のメタ情報(端末内DBにも保存)
-let parts = [];      // 保存画面に出すファイル
+let files = [];      // 保存画面に出すファイル
+
+if (navigator.standalone || matchMedia('(display-mode: standalone)').matches) document.documentElement.classList.add('standalone');
+
+function busy(text) {
+  $('busyText').textContent = text || '';
+  $('busy').style.display = text ? 'flex' : 'none';
+}
 
 // ---------- カメラ(プレビューは表示しない) ----------
 // 実機の結果: 1080p60は約60fpsで安定。4K30は環境によって約20fpsに落ちることがあるため、60fps出せる設定を優先する
@@ -178,14 +208,10 @@ async function prepareCamera() {
   const s = fmtSettings();
   let text = `${Math.max(s.w, s.h)}×${Math.min(s.w, s.h)} ${s.fps}fps${ok ? '' : '(選んだ設定は使えませんでした)'}`;
   const c = stream.getVideoTracks()[0].getCapabilities?.();
-  if (c && c.width && c.frameRate) text += `\nこのブラウザで使える上限: ${c.width.max}×${c.height.max} / ${Math.round(c.frameRate.max)}fps`;
-  if (c) {
+  if (c && c.exposureCompensation) {
     // 流れる景色のブレ対策: 露出を少し下げてシャッター速度を稼ぐ(対応していれば)
-    if (c.exposureCompensation) {
-      const ev = Math.max(c.exposureCompensation.min, -0.7);
-      await stream.getVideoTracks()[0].applyConstraints({ advanced: [{ exposureCompensation: ev }] }).catch(() => {});
-    }
-    text += `\n露出補正: ${c.exposureCompensation ? 'あり' : 'なし'} / シャッター速度の指定: ${c.exposureTime ? 'あり' : 'なし'}`;
+    const ev = Math.max(c.exposureCompensation.min, -0.7);
+    await stream.getVideoTracks()[0].applyConstraints({ advanced: [{ exposureCompensation: ev }] }).catch(() => {});
   }
   return text;
 }
@@ -201,6 +227,12 @@ function stamp() {
   return `${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}-${p(d.getHours())}${p(d.getMinutes())}${p(d.getSeconds())}`;
 }
 
+// "20261006-213925" → "10/6 21:39"
+function sidLabel(sid) {
+  const m = /^(\d{4})(\d{2})(\d{2})-(\d{2})(\d{2})/.exec(sid);
+  return m ? `${+m[2]}/${+m[3]} ${m[4]}:${m[5]}` : sid;
+}
+
 function fmtSize(bytes) {
   return bytes >= 1e9 ? `${(bytes / 1e9).toFixed(2)} GB` : `${(bytes / 1e6).toFixed(1)} MB`;
 }
@@ -208,6 +240,7 @@ function fmtSize(bytes) {
 // ---------- 録画データの保存先(端末内DB) ----------
 // 1秒ごとに書き込むので、アプリが落ちても次回起動時にそこまでの録画を復元できる。
 // キーは「録画ID:パート番号:連番」。古い版の「録画ID:連番」も読めるようにしている。
+// 録画データは、利用者が「削除」を押すまで消さない。
 const dbReady = new Promise((res, rej) => {
   const r = indexedDB.open('silentcam', 1);
   r.onupgradeneeded = () => { r.result.createObjectStore('chunks'); r.result.createObjectStore('meta'); };
@@ -227,10 +260,12 @@ async function dbDo(store, mode, fn) {
 
 const rangeOf = prefix => IDBKeyRange.bound(`${prefix}:`, `${prefix}:￿`);
 
-// ---------- 録画 ----------
-// 長時間録画でも1つのファイルが巨大になって保存時に固まらないよう、5分ごとに別ファイル(パート)に分ける
-const PART_MS = 5 * 60 * 1000;
+async function deleteRecording(sid) {
+  await dbDo('chunks', 'readwrite', s => s.delete(rangeOf(sid)));
+  await dbDo('meta', 'readwrite', s => s.delete(sid));
+}
 
+// ---------- 録画 ----------
 // 純正カメラと同程度のビットレート(HEVCはH.264の約半分で同等画質)
 function bitrate(mime) {
   const s = fmtSettings();
@@ -259,35 +294,24 @@ $('recBtn').onclick = async () => {
     .find(t => MediaRecorder.isTypeSupported(t)) || '';
   const sid = stamp();
   cur = { sid, base: `video-${sid}`, ext: mime.includes('webm') ? 'webm' : 'mp4', mime, memo: '', info: camInfo };
-  const ss = session = { sid, mime, active: true, finalized: false, part: -1, timer: null,
-                         useMem: false, mem: [], chain: Promise.resolve() };
+  const ss = session = { sid, active: true, finalized: false, useMem: false, mem: [], chain: Promise.resolve() };
   // 端末内DBが最初から使えない場合だけメモリに溜める
   ss.chain = dbDo('meta', 'readwrite', st => st.put(cur, sid)).catch(() => { ss.useMem = true; });
-  // 着信や発熱などでiOSがカメラを止めた場合も、そこまでの分を確定させる
-  stream.getVideoTracks()[0].onended = () => stopRecording();
 
-  $('memoText').value = '';
+  let r;
   try {
-    startPart(ss);
+    r = new MediaRecorder(stream, { mimeType: mime || undefined, videoBitsPerSecond: bitrate(mime) });
   } catch (e) {
     session = null;
     stopStream();
     $('err').textContent = `録画を開始できません: ${e.name} ${e.message}`;
     return;
   }
-  enterBlack();
-  try { wakeLock = await navigator.wakeLock.request('screen'); } catch (e) {}
-};
-
-function startPart(ss) {
-  ss.part++;
-  const pp = String(ss.part).padStart(3, '0');
-  let idx = 0;
-  const r = new MediaRecorder(stream, { mimeType: ss.mime || undefined, videoBitsPerSecond: bitrate(ss.mime) });
   if (r.mimeType) cur.mime = r.mimeType;
+  let idx = 0;
   r.ondataavailable = e => {
     if (!e.data.size) return;
-    const key = `${ss.sid}:${pp}:${String(idx++).padStart(8, '0')}`;
+    const key = `${sid}:000:${String(idx++).padStart(8, '0')}`;
     const data = e.data;
     ss.chain = ss.chain.then(() => ss.useMem ? ss.mem.push({ key, data })
       : dbDo('chunks', 'readwrite', st => st.put(data, key)).catch(() => {
@@ -296,18 +320,16 @@ function startPart(ss) {
         }));
   };
   r.onerror = () => stopRecording();
-  r.onstop = () => {
-    // 区切りで止めた場合は次のパートへ。停止操作で止めた場合は保存画面へ
-    if (ss.active) {
-      try { startPart(ss); return; } catch (e) { stopRecording(); }
-    }
-    finalize(ss);
-  };
-  r.start(1000);
+  r.onstop = () => finalize(ss);
+  // 着信や発熱などでiOSがカメラを止めた場合も、そこまでの分を確定させる
+  stream.getVideoTracks()[0].onended = () => stopRecording();
   rec = r;
-  clearTimeout(ss.timer);
-  ss.timer = setTimeout(() => { if (ss.active && rec === r && r.state !== 'inactive') r.stop(); }, PART_MS);
-}
+  r.start(1000);
+
+  $('memoText').value = '';
+  enterBlack();
+  try { wakeLock = await navigator.wakeLock.request('screen'); } catch (e) {}
+};
 
 // 画面ごとにページ背景とテーマ色(Safariのバー色)を切り替える。メモ・保存・ホームは白、録画中は黒
 function setTheme(dark) {
@@ -319,16 +341,14 @@ function stopRecording() {
   const ss = session;
   if (!ss || !ss.active) return;
   ss.active = false;
-  clearTimeout(ss.timer);
   closeViewer(true);
   setTheme(false);
   $('black').style.display = 'none';
   $('memo').style.display = 'none';
   if (wakeLock) { wakeLock.release().catch(() => {}); wakeLock = null; }
-  // 固まって見えないよう、すぐに保存画面を「準備中」で出す
-  showPreparing();
-  // 録画中なら止めて onstop から確定。パートの切り替え中(止めた直後)なら、その onstop が確定する
-  if (rec && rec.state !== 'inactive') rec.stop();
+  // 固まって見えないよう、すぐに「確定中」を出す
+  busy('録画を確定しています...');
+  if (rec && rec.state !== 'inactive') rec.stop(); else finalize(ss);
 }
 
 async function finalize(ss) {
@@ -337,7 +357,7 @@ async function finalize(ss) {
   await ss.chain;
   stopStream();  // 保存画面ではカメラを止めて、電池と発熱を節約する
   if (session === ss) session = null;
-  await loadParts(cur, ss.mem);
+  await openSaveScreen(cur, ss.mem);
 }
 
 // アプリを離れるとiOSがカメラを止めるので、それまでの分を確定させる
@@ -398,7 +418,7 @@ $('memoText').addEventListener('input', () => {
 });
 
 // ---------- 録画中に写真・動画・資料(PDF)を見る ----------
-// 2本指で拡大縮小、ダブルタップで拡大/元に戻す、白黒反転(暗い画面で資料を読む用)
+// 画面全体に表示。2本指で拡大縮小、ダブルタップで画面いっぱいに拡大/元に戻す、1回タップでボタンを隠す/出す
 const viewer = { file: null, url: null, kind: null, zoom: 1, pages: [], io: null, doc: null, aspect: 1, invert: false };
 const vBody = $('viewerBody'), vContent = $('vContent');
 
@@ -417,7 +437,8 @@ function showViewer() {
   setTheme(true);
   $('memo').style.display = 'none';
   $('black').style.display = 'none';
-  $('viewer').style.display = 'flex';
+  $('viewer').classList.remove('bare');
+  $('viewer').style.display = 'block';
   layoutViewer();
 }
 
@@ -436,6 +457,7 @@ function unloadMedia() {
   for (const pg of viewer.pages) { if (pg.task) pg.task.cancel(); pg.canvas.width = pg.canvas.height = 0; }
   if (viewer.doc) viewer.doc.destroy();
   vContent.replaceChildren();
+  vContent.classList.remove('pdf');
   if (viewer.url) URL.revokeObjectURL(viewer.url);
   Object.assign(viewer, { file: null, url: null, kind: null, zoom: 1, pages: [], io: null, doc: null, aspect: 1 });
   vContent.style.width = '';
@@ -492,6 +514,7 @@ function loadPdfJs() {
 
 async function openPdf(f) {
   viewer.kind = 'pdf';
+  vContent.classList.add('pdf');
   const status = document.createElement('div');
   status.id = 'vStatus'; status.textContent = '読み込み中...';
   vContent.replaceChildren(status);
@@ -568,11 +591,19 @@ function updatePageNo() {
 vBody.addEventListener('scroll', updatePageNo, { passive: true });
 
 // ---- 拡大・縮小 ----
-// 等倍は「画面に収まる大きさ」。資料(PDF)は横幅に合わせる
+// 等倍は「画面全体に収まる大きさ」。資料(PDF)は横幅に合わせる
 function baseWidth() {
   const W = vBody.clientWidth, H = vBody.clientHeight;
   if (viewer.kind === 'pdf') return W;
   return Math.min(W, H * (viewer.aspect || 1));
+}
+
+// ダブルタップの拡大先: 写真は「画面いっぱい(余白なし)」、資料は2.5倍
+function fillZoom() {
+  if (viewer.kind === 'pdf') return 2.5;
+  const W = vBody.clientWidth, H = vBody.clientHeight, a = viewer.aspect || 1;
+  const z = Math.max(W, H * a) / Math.min(W, H * a);
+  return z > 1.2 ? z : 2.5;
 }
 
 function layoutViewer() {
@@ -594,17 +625,20 @@ function setZoom(z, cx, cy) {
   vBody.scrollTop = uy * z + vContent.offsetTop - py;
 }
 
-let pinch = null, lastTap = null;
+let pinch = null, lastTap = null, moved = false, singleTapTimer = null;
 const dist = (a, b) => Math.hypot(a.clientX - b.clientX, a.clientY - b.clientY);
 vBody.addEventListener('touchstart', e => {
+  if (e.touches.length === 1) moved = false;
   if (e.touches.length === 2) {
     const [a, b] = e.touches;
     pinch = { d: dist(a, b), z: viewer.zoom };
     lastTap = null;
+    clearTimeout(singleTapTimer);
     e.preventDefault();
   }
 }, { passive: false });
 vBody.addEventListener('touchmove', e => {
+  moved = true;
   if (pinch && e.touches.length === 2) {
     e.preventDefault();
     const [a, b] = e.touches;
@@ -613,146 +647,215 @@ vBody.addEventListener('touchmove', e => {
 }, { passive: false });
 vBody.addEventListener('touchend', e => {
   if (pinch) { if (e.touches.length < 2) { pinch = null; refreshPdf(); } return; }
-  if (e.touches.length || e.changedTouches.length !== 1 || viewer.kind === 'video') return;
-  // ダブルタップ: 拡大中なら等倍に、等倍なら2.5倍に
+  if (e.touches.length || e.changedTouches.length !== 1 || moved) return;
   const t = e.changedTouches[0], now = Date.now();
-  if (lastTap && now - lastTap.t < 300 && Math.hypot(t.clientX - lastTap.x, t.clientY - lastTap.y) < 30) {
+  if (viewer.kind !== 'video' && lastTap && now - lastTap.t < 300 && Math.hypot(t.clientX - lastTap.x, t.clientY - lastTap.y) < 30) {
+    // ダブルタップ: 拡大中なら元に戻す。等倍なら画面いっぱいに拡大
     e.preventDefault();
-    setZoom(viewer.zoom > 1.05 ? 1 : 2.5, t.clientX, t.clientY);
+    clearTimeout(singleTapTimer);
+    setZoom(viewer.zoom > 1.05 ? 1 : fillZoom(), t.clientX, t.clientY);
     refreshPdf();
     lastTap = null;
-  } else lastTap = { t: now, x: t.clientX, y: t.clientY };
+    return;
+  }
+  lastTap = { t: now, x: t.clientX, y: t.clientY };
+  // 1回タップ: ボタンを隠す/出す(全画面表示)
+  clearTimeout(singleTapTimer);
+  singleTapTimer = setTimeout(() => $('viewer').classList.toggle('bare'), 300);
 });
 // iOSでページ全体が拡大されるのを防ぐ
 document.addEventListener('gesturestart', e => e.preventDefault());
 
-// ---------- 保存画面 ----------
-function showPreparing() {
-  $('msg').textContent = '録画を確定しています...';
-  $('parts').replaceChildren();
-  $('saveErr').textContent = '';
-  $('saveMemo').style.display = 'none';
-  $('closeResult').disabled = true;
-  $('result').style.display = 'flex';
-}
+// ---------- 保存 ----------
+// iPhoneのSafariは、共有メニューに渡す動画をいったん全部メモリに読み込む。
+// 大きな動画を渡すとページごと落ちるため、共有(写真アプリへ直接保存)は小さい動画だけにする。
+// 大きな動画は「ファイルに保存」(ダウンロード)で、ファイルアプリに少しずつ書き出す。
+const SHARE_LIMIT = 300e6;
+const isChromeIOS = /CriOS/.test(navigator.userAgent);
 
-// 端末内DBからパートごとのファイルを組み立てる(ファイルの中身はここでは読み込まない)
-async function loadParts(meta, mem = []) {
-  showPreparing();
+// 端末内DBからファイルを組み立てる(中身はここでは読み込まない)
+async function buildFiles(meta, mem = []) {
   const sid = meta.sid;
   const base = meta.base || (meta.name || `video-${sid}`).replace(/\.\w+$/, '');
   const ext = meta.ext || ((meta.name || '').match(/\.(\w+)$/) || [])[1] || 'mp4';
   const type = (meta.mime || '').split(';')[0] || 'video/mp4';
   const groups = new Map();  // パート番号 -> Blob[]
-  try {
-    const keys = await dbDo('chunks', 'readonly', s => s.getAllKeys(rangeOf(sid)));
-    const legacy = keys.some(k => k.split(':').length === 2);
-    const nums = [...new Set(keys.map(k => k.split(':').length === 3 ? k.split(':')[1] : '000'))].sort();
-    for (const pp of nums) {
-      const blobs = await dbDo('chunks', 'readonly', s => s.getAll(legacy ? rangeOf(sid) : rangeOf(`${sid}:${pp}`)));
-      groups.set(pp, blobs);
-    }
-  } catch (e) {}
+  const keys = await dbDo('chunks', 'readonly', s => s.getAllKeys(rangeOf(sid))).catch(() => []);
+  const legacy = keys.some(k => k.split(':').length === 2);
+  const nums = [...new Set(keys.map(k => k.split(':').length === 3 ? k.split(':')[1] : '000'))].sort();
+  for (const pp of nums) {
+    const blobs = await dbDo('chunks', 'readonly', s => s.getAll(legacy ? rangeOf(sid) : rangeOf(`${sid}:${pp}`)));
+    groups.set(pp, blobs);
+  }
   for (const { key, data } of mem) {
     const pp = key.split(':')[1];
     if (!groups.has(pp)) groups.set(pp, []);
     groups.get(pp).push(data);
   }
-  const nums = [...groups.keys()].sort();
-  parts = nums.map((pp, i) => new File(groups.get(pp),
-    nums.length > 1 ? `${base}-part${i + 1}.${ext}` : `${base}.${ext}`, { type }));
-  showResult(meta);
+  const all = [...groups.keys()].sort();
+  return all.map((pp, i) => new File(groups.get(pp),
+    all.length > 1 ? `${base}-part${i + 1}.${ext}` : `${base}.${ext}`, { type }));
 }
 
-function showResult(meta) {
-  const total = parts.reduce((a, f) => a + f.size, 0);
+async function openSaveScreen(meta, mem = []) {
+  busy('録画を読み込んでいます...');
+  cur = meta;
+  try {
+    files = await buildFiles(meta, mem);
+  } catch (e) {
+    files = [];
+    meta.note = (meta.note ? meta.note + '\n' : '') + `読み込みに失敗しました(${e.name})`;
+  }
+  busy();
+  renderSaveScreen(meta);
+}
+
+function renderSaveScreen(meta) {
+  const total = files.reduce((a, f) => a + f.size, 0);
   $('msg').textContent = (meta.note ? meta.note + '\n' : '') +
-    (parts.length ? `録画を端末内に確保しました(${fmtSize(total)}${parts.length > 1 ? `・${parts.length}パート` : ''})` : '録画データが見つかりませんでした') +
-    `\n${meta.info || ''}\n\n「保存」を押して、共有メニューの「ビデオを保存」を選ぶと、写真アプリの「ビデオ」に入ります。` +
-    (parts.length > 1 ? '\n長時間の録画は5分ごとのパートに分かれています。順番に保存してください。' : '');
-  const box = $('parts');
+    (files.length ? `${sidLabel(meta.sid)} の録画(${fmtSize(total)})` : '録画データが見つかりませんでした') +
+    (meta.info ? `\n${meta.info}` : '');
+  const box = $('files');
   box.replaceChildren();
-  parts.forEach((f, i) => {
-    const b = document.createElement('button');
-    b.className = 'btn';
-    const label = parts.length > 1 ? `パート${i + 1}を保存` : '動画を保存';
-    b.textContent = `${label}(${fmtSize(f.size)})`;
-    b.onclick = async () => {
-      const r = await saveFiles([f], b);
-      if (r === 'ok') { b.classList.add('done'); b.textContent = `✓ ${label}(保存済み)`; }
-    };
-    box.append(b);
+  files.forEach((f, i) => {
+    const div = document.createElement('div');
+    div.className = 'fileBox';
+    const name = document.createElement('div');
+    name.className = 'name';
+    name.textContent = `${files.length > 1 ? `パート${i + 1} ・ ` : ''}${fmtSize(f.size)}`;
+    div.append(name);
+    if (f.size <= SHARE_LIMIT) {
+      const b = document.createElement('button');
+      b.className = 'btn';
+      b.textContent = '写真アプリに保存';
+      b.onclick = async () => {
+        if (await shareFile(f)) { b.classList.add('done'); b.textContent = '✓ 写真アプリに保存'; }
+      };
+      div.append(b);
+      const n = document.createElement('div');
+      n.className = 'note';
+      n.textContent = '共有メニューが開いたら「ビデオを保存」を選んでください。';
+      div.append(n);
+    }
+    const d = document.createElement('button');
+    d.className = f.size <= SHARE_LIMIT ? 'btn sub' : 'btn';
+    d.textContent = 'ファイルに保存(大きな動画向け)';
+    d.onclick = () => { downloadFile(f); d.classList.add('done'); d.textContent = '✓ ダウンロードを開始しました'; };
+    div.append(d);
+    const n2 = document.createElement('div');
+    n2.className = 'note';
+    n2.textContent = (f.size > SHARE_LIMIT ? '大きな動画のため、写真アプリへ直接は保存できません。\n' : '') +
+      '「ファイル」アプリの「ダウンロード」に保存されます。写真アプリに入れるには、ファイルアプリで動画を長押し →「共有」→「ビデオを保存」。' +
+      (isChromeIOS ? '\n大きな動画はSafariで開いて保存してください(Chromeでは失敗することがあります)。' : '');
+    div.append(n2);
+    box.append(div);
   });
   $('memoText').value = meta.memo || $('memoText').value;
   $('saveMemo').style.display = ($('memoText').value || '').trim() ? '' : 'none';
-  $('closeResult').disabled = false;
+  $('saveErr').textContent = '';
   $('result').style.display = 'flex';
+  $('result').scrollTop = 0;
 }
 
-// iPhoneは共有シートから「保存」。共有中に二重に押せないようにする。
-// 共有に失敗しても、巨大なファイルのダウンロードには切り替えない(固まる原因になるため)
+// 写真アプリへ(共有メニュー)。共有中に二重に押せないようにする
 let sharing = false;
-async function saveFiles(files, btn) {
-  if (sharing) return 'busy';
+async function shareFile(f) {
+  if (sharing) return false;
   $('saveErr').textContent = '';
-  if (navigator.canShare && navigator.share) {
-    if (!navigator.canShare({ files })) {
-      $('saveErr').textContent = 'このブラウザではこのファイルを共有できません。Safariで開き直してお試しください。';
-      return 'error';
-    }
-    sharing = true;
-    if (btn) btn.disabled = true;
-    try {
-      await navigator.share({ files });
-      return 'ok';
-    } catch (e) {
-      if (e.name !== 'AbortError') $('saveErr').textContent = `保存できませんでした(${e.name})。もう一度押してください。`;
-      return e.name === 'AbortError' ? 'cancel' : 'error';
-    } finally {
-      sharing = false;
-      if (btn) btn.disabled = false;
-    }
+  if (!navigator.canShare || !navigator.canShare({ files: [f] })) {
+    $('saveErr').textContent = 'このブラウザでは共有できません。「ファイルに保存」を使ってください。';
+    return false;
   }
-  // 共有に対応しない環境(PCなど)はダウンロード
-  for (const f of files) {
-    const a = document.createElement('a');
-    a.href = URL.createObjectURL(f); a.download = f.name; a.click();
-    setTimeout(() => URL.revokeObjectURL(a.href), 60000);
+  sharing = true;
+  busy('共有メニューを準備しています...\n(動画が大きいと数十秒かかります)');
+  try {
+    await navigator.share({ files: [f] });
+    return true;
+  } catch (e) {
+    if (e.name !== 'AbortError') $('saveErr').textContent = `保存できませんでした(${e.name})。「ファイルに保存」をお試しください。`;
+    return false;
+  } finally {
+    sharing = false;
+    busy();
   }
-  return 'ok';
+}
+
+// ファイルアプリへ(ダウンロード)。ブラウザが端末内のデータを少しずつ書き出すので、大きな動画でもメモリを使い切らない
+const downloadURLs = [];
+function downloadFile(f) {
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(f);
+  a.download = f.name;
+  document.body.append(a);
+  a.click();
+  a.remove();
+  downloadURLs.push(a.href);  // 書き出しが終わるまで解放しない(画面を離れるときに解放)
 }
 
 $('saveMemo').onclick = () => {
-  const name = (parts[0]?.name || `memo-${stamp()}`).replace(/(-part\d+)?\.\w+$/, '') + '.txt';
-  saveFiles([new File([$('memoText').value], name, { type: 'text/plain' })], $('saveMemo'));
+  const name = `${cur?.base || `memo-${stamp()}`}.txt`;
+  const f = new File([$('memoText').value], name, { type: 'text/plain' });
+  if (navigator.canShare && navigator.canShare({ files: [f] })) navigator.share({ files: [f] }).catch(() => {});
+  else downloadFile(f);
 };
 
-$('closeResult').onclick = async () => {
-  const unsaved = [...$('parts').children].some(b => !b.classList.contains('done'));
-  if (!confirm(unsaved ? '保存していない動画は消えます。カメラに戻りますか?' : '端末内の一時データを削除して、カメラに戻ります。')) return;
-  if (cur) {
-    await dbDo('chunks', 'readwrite', s => s.delete(rangeOf(cur.sid))).catch(() => {});
-    await dbDo('meta', 'readwrite', s => s.delete(cur.sid)).catch(() => {});
-  }
-  parts = []; cur = null;
-  $('parts').replaceChildren();
+function leaveSaveScreen() {
+  downloadURLs.splice(0).forEach(u => URL.revokeObjectURL(u));
+  files = []; cur = null;
+  $('files').replaceChildren();
   $('memoText').value = '';
   $('result').style.display = 'none';
-  checkLeftover();
-};
+  refreshStored();
+}
 
-// ---------- 前回の録画が残っていたら復元 ----------
-async function checkLeftover() {
-  const box = $('leftover');
-  box.hidden = true;
+$('deleteAndBack').onclick = async () => {
+  if (!confirm('この録画を端末内から削除します。\n写真アプリまたはファイルアプリに保存できたことを確認しましたか?')) return;
+  busy('削除しています...');
+  try { if (cur) await deleteRecording(cur.sid); } catch (e) {}
+  busy();
+  leaveSaveScreen();
+};
+$('keepAndBack').onclick = () => leaveSaveScreen();
+
+// ---------- 端末内に残っている録画の一覧(中断された録画・まだ削除していない録画) ----------
+let storedGen = 0;
+async function refreshStored() {
+  const gen = ++storedGen;  // 連続で呼ばれても一覧が二重にならないよう、最後の呼び出しだけ反映する
   let metas = [];
   try { metas = await dbDo('meta', 'readonly', s => s.getAll()); } catch (e) {}
-  if (!metas || !metas.length) return;
-  const m = metas[0];
-  box.hidden = false;
-  $('leftoverBtn').onclick = () => { cur = m; loadParts(m); };
+  metas = (metas || []).filter(m => !session || m.sid !== session.sid).reverse();  // 新しい順
+  const rows = [];
+  for (const m of metas) {
+    const blobs = await dbDo('chunks', 'readonly', s => s.getAll(rangeOf(m.sid))).catch(() => []);
+    rows.push({ m, size: (blobs || []).reduce((a, b) => a + b.size, 0) });
+  }
+  if (gen !== storedGen) return;
+  const list = $('storedList');
+  list.replaceChildren();
+  $('stored').hidden = !rows.length;
+  for (const { m, size } of rows) {
+    const row = document.createElement('div');
+    row.className = 'srow';
+    const label = document.createElement('span');
+    label.textContent = `${sidLabel(m.sid)} ・ ${fmtSize(size)}`;
+    const save = document.createElement('button');
+    save.className = 'btn small';
+    save.textContent = '保存';
+    save.disabled = !size;
+    save.onclick = () => openSaveScreen(m);
+    const del = document.createElement('button');
+    del.className = 'btn small sub';
+    del.textContent = '削除';
+    del.onclick = async () => {
+      if (!confirm(`${sidLabel(m.sid)} の録画を削除します。保存していない場合は元に戻せません。`)) return;
+      await deleteRecording(m.sid).catch(() => {});
+      refreshStored();
+    };
+    row.append(label, save, del);
+    list.append(row);
+  }
 }
-checkLeftover();
+refreshStored();
 </script>
 </body>
 </html>
