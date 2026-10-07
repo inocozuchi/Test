@@ -15,8 +15,12 @@
   * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
   html, body { margin: 0; height: 100%; background: #fff; color: #000; overflow: hidden;
     font-family: -apple-system, sans-serif; touch-action: manipulation; -webkit-user-select: none; user-select: none; }
-  #home { position: fixed; inset: 0; background: #fff; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 24px; padding: 16px; text-align: center; overflow: auto; }
-  #info { position: fixed; top: calc(env(safe-area-inset-top) + 12px); left: 0; right: 0; font-size: 13px; color: #888; white-space: pre-line; line-height: 1.6; }
+  #home { position: fixed; inset: 0; background: #fff; display: flex; flex-direction: column; overflow: auto;
+    padding: calc(env(safe-area-inset-top) + 12px) 16px calc(env(safe-area-inset-bottom) + 16px); text-align: center; }
+  /* 中身が画面より長いときに上が切れないよう、justify-content ではなく margin:auto で中央に置く */
+  #homeInner { margin: auto 0; display: flex; flex-direction: column; align-items: center; gap: 20px; padding-top: 8px; }
+  #info { font-size: 13px; color: #888; white-space: pre-line; line-height: 1.6; }
+  #guide { font-size: 12px; color: #999; line-height: 1.7; white-space: pre-line; }
   select { font-size: 16px; color: #000; background: #fff; border: 1px solid #ccc; border-radius: 8px; padding: 8px 10px; }
   #recBtn { width: 96px; height: 96px; border-radius: 50%; border: 0; background: #000; padding: 0; flex: none; }
   #recBtn:disabled { background: #bbb; }
@@ -90,7 +94,8 @@
 <body>
 <div id="topcap"></div>
 <div id="home">
-  <div id="info">画質を選んで、録画ボタンを押してください</div>
+  <div id="info"></div>
+  <div id="homeInner">
   <div id="stored" hidden>
     <div class="title">端末内に残っている録画</div>
     <div id="storedList"></div>
@@ -104,6 +109,10 @@
   </select>
   <button id="recBtn" aria-label="録画開始"></button>
   <div id="err"></div>
+  <div id="guide">録画中は画面が真っ黒になります
+5回タップ: メモ ・ 10回タップ: 停止
+横向きで撮るときは、画面の向きのロックを解除してください</div>
+  </div>
 </div>
 
 <div id="black"><div id="tapHint"></div></div>
@@ -115,7 +124,7 @@
     <span class="spacer"></span>
     <button class="btn" id="memoBack">戻る</button>
   </header>
-  <textarea id="memoText" placeholder="メモを入力"></textarea>
+  <textarea id="memoText" placeholder="メモを入力(自動で保存されます)"></textarea>
 </div>
 
 <input type="file" id="pick" accept="image/*,video/*,application/pdf" style="position:fixed;left:-9999px;opacity:0">
@@ -139,8 +148,11 @@
     <button class="btn sub" id="saveMemo">メモを保存</button>
     <button class="btn" id="deleteAndBack" style="background:#c33">保存できたので削除して戻る</button>
     <button class="btn sub" id="keepAndBack">残したまま戻る</button>
+    <button class="btn sub" id="recAgain">残したまま、続けて録画する</button>
   </div>
 </div>
+
+<video id="awake" muted playsinline style="position:fixed;left:0;top:0;width:2px;height:2px;opacity:.01;pointer-events:none"></video>
 
 <div id="busy"><div class="spinner"></div><div id="busyText"></div></div>
 
@@ -185,11 +197,21 @@ async function tryOpen(w, h, fps) {
 }
 
 // 自動: 4K60から順に試し、解像度とフレームレートの両方を満たした最初の設定を使う。手動: 選んだ設定だけ試す
+// 自動で決まった設定は覚えておき、次回はそこから試す(使えない設定を毎回試さないので起動が速い)
 async function openCamera() {
   const v = $('quality').value;
-  const list = v === 'auto' ? CANDIDATES : [v.split(/[x@]/).map(Number)];
+  let list = v === 'auto' ? CANDIDATES : [v.split(/[x@]/).map(Number)];
+  if (v === 'auto') {
+    const i = Number(store.get('autoIndex'));
+    if (i > 0 && i < CANDIDATES.length) list = [...CANDIDATES.slice(i), ...CANDIDATES.slice(0, i)];
+  }
   for (const [w, h, fps] of list) {
-    try { if (await tryOpen(w, h, fps)) return true; } catch (e) {}
+    try {
+      if (await tryOpen(w, h, fps)) {
+        if (v === 'auto') store.set('autoIndex', CANDIDATES.findIndex(c => c[0] === w && c[2] === fps));
+        return true;
+      }
+    } catch (e) {}
   }
   stopStream();
   const [w, h, fps] = list[0];
@@ -215,10 +237,36 @@ async function prepareCamera() {
   }
   return text;
 }
-try { const q = localStorage.getItem('quality'); if (q) $('quality').value = q; } catch (e) {}
-$('quality').onchange = () => {
-  try { localStorage.setItem('quality', $('quality').value); } catch (e) {}
+// 設定の保存(使えない環境では何もしない)
+const store = {
+  get: k => { try { return localStorage.getItem(k); } catch (e) { return null; } },
+  set: (k, v) => { try { localStorage.setItem(k, v); } catch (e) {} },
 };
+if (store.get('quality')) $('quality').value = store.get('quality');
+$('quality').onchange = () => { store.set('quality', $('quality').value); showHomeInfo(); };
+
+// ホーム上部: 空き容量と、選んだ画質で録画できるおおよその時間
+const MBPS = { '3840x2160@60': 60, '3840x2160@30': 60, '1920x1080@60': 31, '1920x1080@30': 16 };
+function expectedMode() {
+  const v = $('quality').value;
+  if (v !== 'auto') return v;
+  const i = store.get('autoIndex');
+  const [w, h, fps] = CANDIDATES[i === null ? 1 : Number(i)] || CANDIDATES[1];  // 未確定なら1080p60と見なす
+  return `${w}x${h}@${fps}`;
+}
+async function showHomeInfo() {
+  let text = '';
+  try {
+    const est = await navigator.storage.estimate();
+    const free = est.quota - est.usage;
+    if (free > 0 && free < 1e13) {
+      const min = Math.floor(free * 8 / ((MBPS[expectedMode()] || 31) * 1e6) / 60);
+      text = `保存できる空き: ${fmtSize(free)}(この画質で約${min >= 120 ? `${Math.floor(min / 60)}時間` : `${min}分`})`;
+    }
+  } catch (e) {}
+  if (!('wakeLock' in navigator)) text += (text ? '\n' : '') + '※この端末では自動ロックを止められません。設定で自動ロックを「なし」にしてください';
+  $('info').textContent = text;
+}
 // 長時間録画中にブラウザが端末内データを消さないよう、永続化を要求
 navigator.storage?.persist?.().catch(() => {});
 
@@ -231,6 +279,16 @@ function stamp() {
 function sidLabel(sid) {
   const m = /^(\d{4})(\d{2})(\d{2})-(\d{2})(\d{2})/.exec(sid);
   return m ? `${+m[2]}/${+m[3]} ${m[4]}:${m[5]}` : sid;
+}
+
+function fmtDur(sec) {
+  if (!(sec > 0)) return '';
+  return sec < 60 ? `${Math.round(sec)}秒` : sec < 3600 ? `約${Math.round(sec / 60)}分` : `約${Math.floor(sec / 3600)}時間${Math.round(sec % 3600 / 60)}分`;
+}
+
+// 録画時間: 終了時刻があればそれを使い、途中で終わった録画は書き込み回数(1秒ごと)から見積もる
+function recDuration(meta, chunkCount) {
+  return meta.start && meta.end ? (meta.end - meta.start) / 1000 : chunkCount;
 }
 
 function fmtSize(bytes) {
@@ -282,18 +340,20 @@ $('recBtn').onclick = async () => {
     camInfo = await prepareCamera();
   } catch (e) {
     stopStream();
-    $('info').textContent = '画質を選んで、録画ボタンを押してください';
-    $('err').textContent = `カメラを起動できません: ${e.name} ${e.message}`;
+    showHomeInfo();
+    $('err').textContent = e.name === 'NotAllowedError'
+      ? 'カメラの使用が許可されていません。\n設定 → アプリ → Safari → カメラ を「許可」にして、ページを開き直してください。'
+      : `カメラを起動できません: ${e.name} ${e.message}`;
     $('recBtn').disabled = false;
     return;
   }
   $('recBtn').disabled = false;
-  $('info').textContent = '画質を選んで、録画ボタンを押してください';
+  showHomeInfo();
 
   const mime = ['video/mp4;codecs=hvc1', 'video/mp4;codecs=avc1', 'video/mp4', 'video/webm']
     .find(t => MediaRecorder.isTypeSupported(t)) || '';
   const sid = stamp();
-  cur = { sid, base: `video-${sid}`, ext: mime.includes('webm') ? 'webm' : 'mp4', mime, memo: '', info: camInfo };
+  cur = { sid, base: `video-${sid}`, ext: mime.includes('webm') ? 'webm' : 'mp4', mime, memo: '', info: camInfo, start: Date.now() };
   const ss = session = { sid, active: true, finalized: false, useMem: false, mem: [], chain: Promise.resolve() };
   // 端末内DBが最初から使えない場合だけメモリに溜める
   ss.chain = dbDo('meta', 'readwrite', st => st.put(cur, sid)).catch(() => { ss.useMem = true; });
@@ -328,8 +388,22 @@ $('recBtn').onclick = async () => {
 
   $('memoText').value = '';
   enterBlack();
-  try { wakeLock = await navigator.wakeLock.request('screen'); } catch (e) {}
+  keepAwake();
 };
+
+// 録画中は自動ロックさせない(ロックされるとiOSがカメラを止めてしまう)
+async function keepAwake() {
+  try { wakeLock = await navigator.wakeLock.request('screen'); return; } catch (e) {}
+  // 使えない場合の代わり: 見えない小さな動画を再生し続ける
+  const v = $('awake');
+  v.srcObject = stream;
+  v.play().catch(() => {});
+}
+
+function releaseAwake() {
+  if (wakeLock) { wakeLock.release().catch(() => {}); wakeLock = null; }
+  $('awake').srcObject = null;
+}
 
 // 画面ごとにページ背景とテーマ色(Safariのバー色)を切り替える。メモ・保存・ホームは白、録画中は黒
 function setTheme(dark) {
@@ -345,7 +419,7 @@ function stopRecording() {
   setTheme(false);
   $('black').style.display = 'none';
   $('memo').style.display = 'none';
-  if (wakeLock) { wakeLock.release().catch(() => {}); wakeLock = null; }
+  releaseAwake();
   // 固まって見えないよう、すぐに「確定中」を出す
   busy('録画を確定しています...');
   if (rec && rec.state !== 'inactive') rec.stop(); else finalize(ss);
@@ -357,13 +431,18 @@ async function finalize(ss) {
   await ss.chain;
   stopStream();  // 保存画面ではカメラを止めて、電池と発熱を節約する
   if (session === ss) session = null;
+  // 最後に入力したメモと録画時間を確実に残す
+  clearTimeout(memoTimer);
+  cur.memo = $('memoText').value;
+  cur.end = Date.now();
+  await dbDo('meta', 'readwrite', st => st.put(cur, cur.sid)).catch(() => {});
   await openSaveScreen(cur, ss.mem);
 }
 
 // アプリを離れるとiOSがカメラを止めるので、それまでの分を確定させる
 document.addEventListener('visibilitychange', () => {
   if (document.hidden) stopRecording();
-  else if (wakeLock === null && session && session.active) navigator.wakeLock?.request('screen').then(l => wakeLock = l).catch(() => {});
+  else if (wakeLock === null && session && session.active) keepAwake();
 });
 
 window.addEventListener('pagehide', stopRecording);
@@ -433,7 +512,13 @@ $('vInvert').onclick = () => {
   $('vInvert').classList.toggle('on', viewer.invert);
 };
 
+let hintShown = false;
 function showViewer() {
+  if (!hintShown) {
+    hintShown = true;
+    $('vPage').textContent = '1回タップ: ボタンを隠す ・ ダブルタップ: 拡大';
+    setTimeout(() => { if (viewer.kind !== 'pdf') $('vPage').textContent = ''; else updatePageNo(); }, 3000);
+  }
   setTheme(true);
   $('memo').style.display = 'none';
   $('black').style.display = 'none';
@@ -702,6 +787,7 @@ async function openSaveScreen(meta, mem = []) {
   cur = meta;
   try {
     files = await buildFiles(meta, mem);
+    meta.chunks = await dbDo('chunks', 'readonly', s => s.count(rangeOf(meta.sid))).catch(() => 0);
   } catch (e) {
     files = [];
     meta.note = (meta.note ? meta.note + '\n' : '') + `読み込みに失敗しました(${e.name})`;
@@ -713,7 +799,7 @@ async function openSaveScreen(meta, mem = []) {
 function renderSaveScreen(meta) {
   const total = files.reduce((a, f) => a + f.size, 0);
   $('msg').textContent = (meta.note ? meta.note + '\n' : '') +
-    (files.length ? `${sidLabel(meta.sid)} の録画(${fmtSize(total)})` : '録画データが見つかりませんでした') +
+    (files.length ? `${sidLabel(meta.sid)} の録画(${[fmtDur(recDuration(meta, meta.chunks)), fmtSize(total)].filter(Boolean).join('・')})` : '録画データが見つかりませんでした') +
     (meta.info ? `\n${meta.info}` : '');
   const box = $('files');
   box.replaceChildren();
@@ -740,7 +826,12 @@ function renderSaveScreen(meta) {
     const d = document.createElement('button');
     d.className = f.size <= SHARE_LIMIT ? 'btn sub' : 'btn';
     d.textContent = 'ファイルに保存(大きな動画向け)';
-    d.onclick = () => { downloadFile(f); d.classList.add('done'); d.textContent = '✓ ダウンロードを開始しました'; };
+    d.onclick = () => {
+      downloadFile(f);
+      d.classList.add('done');
+      d.textContent = '✓ ダウンロードを開始しました';
+      $('saveErr').textContent = '進み具合は、Safariのアドレスバーにある「↓」(ダウンロード)で確認できます。\n完了するまで、この画面を閉じたり録画を削除したりしないでください。';
+    };
     div.append(d);
     const n2 = document.createElement('div');
     n2.className = 'note';
@@ -799,8 +890,10 @@ $('saveMemo').onclick = () => {
   else downloadFile(f);
 };
 
-function leaveSaveScreen() {
-  downloadURLs.splice(0).forEach(u => URL.revokeObjectURL(u));
+// ダウンロード中のデータを消さないよう、ダウンロード用のURLは「削除」したときだけ解放する
+function leaveSaveScreen(release) {
+  showHomeInfo();
+  if (release) downloadURLs.splice(0).forEach(u => URL.revokeObjectURL(u));
   files = []; cur = null;
   $('files').replaceChildren();
   $('memoText').value = '';
@@ -809,13 +902,14 @@ function leaveSaveScreen() {
 }
 
 $('deleteAndBack').onclick = async () => {
-  if (!confirm('この録画を端末内から削除します。\n写真アプリまたはファイルアプリに保存できたことを確認しましたか?')) return;
+  if (!confirm('この録画を端末内から削除します。\n写真アプリ、またはファイルアプリへの保存(ダウンロード)が完了したことを確認しましたか?')) return;
   busy('削除しています...');
   try { if (cur) await deleteRecording(cur.sid); } catch (e) {}
   busy();
-  leaveSaveScreen();
+  leaveSaveScreen(true);
 };
 $('keepAndBack').onclick = () => leaveSaveScreen();
+$('recAgain').onclick = () => { leaveSaveScreen(); $('recBtn').click(); };
 
 // ---------- 端末内に残っている録画の一覧(中断された録画・まだ削除していない録画) ----------
 let storedGen = 0;
@@ -827,17 +921,17 @@ async function refreshStored() {
   const rows = [];
   for (const m of metas) {
     const blobs = await dbDo('chunks', 'readonly', s => s.getAll(rangeOf(m.sid))).catch(() => []);
-    rows.push({ m, size: (blobs || []).reduce((a, b) => a + b.size, 0) });
+    rows.push({ m, size: (blobs || []).reduce((a, b) => a + b.size, 0), dur: recDuration(m, (blobs || []).length) });
   }
   if (gen !== storedGen) return;
   const list = $('storedList');
   list.replaceChildren();
   $('stored').hidden = !rows.length;
-  for (const { m, size } of rows) {
+  for (const { m, size, dur } of rows) {
     const row = document.createElement('div');
     row.className = 'srow';
     const label = document.createElement('span');
-    label.textContent = `${sidLabel(m.sid)} ・ ${fmtSize(size)}`;
+    label.textContent = [sidLabel(m.sid), fmtDur(dur), fmtSize(size)].filter(Boolean).join(' ・ ');
     const save = document.createElement('button');
     save.className = 'btn small';
     save.textContent = '保存';
@@ -856,6 +950,10 @@ async function refreshStored() {
   }
 }
 refreshStored();
+showHomeInfo();
+
+// 圏外でもアプリを開けるよう、ページと表示用プログラムを端末に保存しておく
+if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(() => {});
 </script>
 </body>
 </html>
