@@ -754,7 +754,7 @@ document.addEventListener('gesturestart', e => e.preventDefault());
 // ---------- 保存 ----------
 // iPhoneのSafariは、共有メニューに渡す動画をいったん全部メモリに読み込む。
 // 大きな動画を渡すとページごと落ちるため、共有(写真アプリへ直接保存)は小さい動画だけにする。
-// 大きな動画は「ファイルに保存」(ダウンロード)で、ファイルアプリに少しずつ書き出す。
+// 大きな動画は「ファイルアプリに保存」(ダウンロード)で、ファイルアプリに少しずつ書き出す。
 const SHARE_LIMIT = 300e6;
 const isChromeIOS = /CriOS/.test(navigator.userAgent);
 
@@ -806,10 +806,12 @@ function renderSaveScreen(meta) {
   files.forEach((f, i) => {
     const div = document.createElement('div');
     div.className = 'fileBox';
-    const name = document.createElement('div');
-    name.className = 'name';
-    name.textContent = `${files.length > 1 ? `パート${i + 1} ・ ` : ''}${fmtSize(f.size)}`;
-    div.append(name);
+    if (files.length > 1) {  // 1本だけなら大きさは上に出ているので省く
+      const name = document.createElement('div');
+      name.className = 'name';
+      name.textContent = `パート${i + 1} ・ ${fmtSize(f.size)}`;
+      div.append(name);
+    }
     if (f.size <= SHARE_LIMIT) {
       const b = document.createElement('button');
       b.className = 'btn';
@@ -825,7 +827,7 @@ function renderSaveScreen(meta) {
     }
     const d = document.createElement('button');
     d.className = f.size <= SHARE_LIMIT ? 'btn sub' : 'btn';
-    d.textContent = 'ファイルに保存(大きな動画向け)';
+    d.textContent = 'ファイルアプリに保存';
     d.onclick = () => {
       downloadFile(f);
       d.classList.add('done');
@@ -854,7 +856,7 @@ async function shareFile(f) {
   if (sharing) return false;
   $('saveErr').textContent = '';
   if (!navigator.canShare || !navigator.canShare({ files: [f] })) {
-    $('saveErr').textContent = 'このブラウザでは共有できません。「ファイルに保存」を使ってください。';
+    $('saveErr').textContent = 'このブラウザでは共有できません。「ファイルアプリに保存」を使ってください。';
     return false;
   }
   sharing = true;
@@ -863,7 +865,7 @@ async function shareFile(f) {
     await navigator.share({ files: [f] });
     return true;
   } catch (e) {
-    if (e.name !== 'AbortError') $('saveErr').textContent = `保存できませんでした(${e.name})。「ファイルに保存」をお試しください。`;
+    if (e.name !== 'AbortError') $('saveErr').textContent = `保存できませんでした(${e.name})。「ファイルアプリに保存」をお試しください。`;
     return false;
   } finally {
     sharing = false;
