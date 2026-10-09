@@ -43,6 +43,7 @@
   /* 画面の端(ホームバーやSafariのツールバー周り)まで黒くするため、録画中はページ全体の背景も黒にする */
   html.recording, html.recording body { background: #000; }
   #black { position: fixed; top: 0; left: 0; width: 100vw; height: 100lvh; background: #000; display: none; z-index: 10; touch-action: none; }
+  #blackMsg { position: absolute; left: 16px; right: 16px; top: 45%; text-align: center; color: #555; font-size: 14px; line-height: 1.7; white-space: pre-line; pointer-events: none; }
   #tapHint { position: absolute; left: 50%; bottom: 40px; transform: translateX(-50%); color: #222; font-size: 14px; opacity: 0; transition: opacity .3s; }
 
   /* メモ画面(白背景) */
@@ -115,7 +116,7 @@
   </div>
 </div>
 
-<div id="black"><div id="tapHint"></div></div>
+<div id="black"><div id="blackMsg"></div><div id="tapHint"></div></div>
 
 <div id="memo">
   <header>
@@ -331,10 +332,18 @@ function bitrate(mime) {
   return Math.min(60e6, Math.round(s.w * s.h * s.fps * k));
 }
 
-$('recBtn').onclick = async () => {
+$('recBtn').onclick = () => startRecording();
+
+function pickMime() {
+  return ['video/mp4;codecs=hvc1', 'video/mp4;codecs=avc1', 'video/mp4', 'video/webm']
+    .find(t => MediaRecorder.isTypeSupported(t)) || '';
+}
+
+// 録画を始める。resume を渡すと、途中で止まった録画の続き(次のパート)として記録する
+async function startRecording(resume) {
   $('err').textContent = '';
   $('recBtn').disabled = true;
-  $('info').textContent = 'カメラ起動中...';
+  $('info').textContent = resume ? '中断された録画を再開しています...' : 'カメラ起動中...';
   let camInfo;
   try {
     camInfo = await prepareCamera();
@@ -345,33 +354,50 @@ $('recBtn').onclick = async () => {
       ? 'カメラの使用が許可されていません。\n設定 → アプリ → Safari → カメラ を「許可」にして、ページを開き直してください。'
       : `カメラを起動できません: ${e.name} ${e.message}`;
     $('recBtn').disabled = false;
-    return;
+    return false;
   }
   $('recBtn').disabled = false;
   showHomeInfo();
 
-  const mime = ['video/mp4;codecs=hvc1', 'video/mp4;codecs=avc1', 'video/mp4', 'video/webm']
-    .find(t => MediaRecorder.isTypeSupported(t)) || '';
-  const sid = stamp();
-  cur = { sid, base: `video-${sid}`, ext: mime.includes('webm') ? 'webm' : 'mp4', mime, memo: '', info: camInfo, start: Date.now() };
-  const ss = session = { sid, active: true, finalized: false, useMem: false, mem: [], chain: Promise.resolve() };
+  const mime = pickMime();
+  if (resume) {
+    cur = resume.meta;
+    $('memoText').value = cur.memo || '';
+  } else {
+    const sid = stamp();
+    cur = { sid, base: `video-${sid}`, ext: mime.includes('webm') ? 'webm' : 'mp4', mime, memo: '', info: camInfo, start: Date.now() };
+    $('memoText').value = '';
+  }
+  const ss = session = { sid: cur.sid, mime, active: true, finalized: false, part: resume ? resume.nextPart - 1 : -1,
+                         useMem: false, mem: [], chain: Promise.resolve(), recovering: false, retryTimer: null,
+                         lastData: Date.now(), dog: null };
   // 端末内DBが最初から使えない場合だけメモリに溜める
-  ss.chain = dbDo('meta', 'readwrite', st => st.put(cur, sid)).catch(() => { ss.useMem = true; });
-
-  let r;
+  ss.chain = dbDo('meta', 'readwrite', st => st.put(cur, cur.sid)).catch(() => { ss.useMem = true; });
   try {
-    r = new MediaRecorder(stream, { mimeType: mime || undefined, videoBitsPerSecond: bitrate(mime) });
+    startPart(ss);
   } catch (e) {
     session = null;
     stopStream();
     $('err').textContent = `録画を開始できません: ${e.name} ${e.message}`;
-    return;
+    return false;
   }
-  if (r.mimeType) cur.mime = r.mimeType;
+  enterBlack();
+  keepAwake();
+  startWatchdog(ss);
+  return true;
+}
+
+// MediaRecorder を1つ動かす。カメラや録画が途中で止まったら、同じ録画の次のパートとして録り直す
+function startPart(ss) {
+  const r = new MediaRecorder(stream, { mimeType: ss.mime || undefined, videoBitsPerSecond: bitrate(ss.mime) });
+  ss.part++;
+  const pp = String(ss.part).padStart(3, '0');
   let idx = 0;
+  if (r.mimeType) cur.mime = r.mimeType;
   r.ondataavailable = e => {
     if (!e.data.size) return;
-    const key = `${sid}:000:${String(idx++).padStart(8, '0')}`;
+    ss.lastData = Date.now();
+    const key = `${ss.sid}:${pp}:${String(idx++).padStart(8, '0')}`;
     const data = e.data;
     ss.chain = ss.chain.then(() => ss.useMem ? ss.mem.push({ key, data })
       : dbDo('chunks', 'readwrite', st => st.put(data, key)).catch(() => {
@@ -379,21 +405,88 @@ $('recBtn').onclick = async () => {
           stopRecording();
         }));
   };
-  r.onerror = () => stopRecording();
-  r.onstop = () => finalize(ss);
-  // 着信や発熱などでiOSがカメラを止めた場合も、そこまでの分を確定させる
-  stream.getVideoTracks()[0].onended = () => stopRecording();
+  // 停止操作なら保存画面へ。それ以外(エラーやカメラの停止)で止まったら録画を再開する
+  r.onstop = () => {
+    if (!ss.active) finalize(ss);
+    else if (cameraEnded()) onCameraEnded(ss);
+    else recoverCapture(ss);
+  };
+  stream.getVideoTracks()[0].onended = () => onCameraEnded(ss);
   rec = r;
+  ss.lastData = Date.now();
   r.start(1000);
+}
 
-  $('memoText').value = '';
-  enterBlack();
-  keepAwake();
-};
+function cameraEnded() {
+  const t = stream && stream.getVideoTracks()[0];
+  return !t || t.readyState === 'ended';
+}
+
+// 録画中の黒い画面に出す控えめなお知らせ
+function blackMsg(text) {
+  $('blackMsg').textContent = text || '';
+}
+
+// 画面を見ているときにカメラが止まった(iOSの「カメラ収録を停止」でOKを押した、発熱、着信など)。
+// 10秒待ってから自動で録画を再開する。本当に終えたいときは、その間に10回タップで保存できる
+function onCameraEnded(ss) {
+  if (!ss.active || ss.retryTimer || ss.recovering) return;
+  if (document.hidden) return;  // 画面に戻ったときに再開する
+  blackMsg('カメラが止まりました。10秒後に録画を再開します\n(終えるときは10回タップ)');
+  ss.retryTimer = setTimeout(() => { ss.retryTimer = null; recoverCapture(ss); }, 10000);
+}
+
+// 録画を新しいパートとして再開する。カメラが開けなければ、5秒ごとに再挑戦し続ける
+async function recoverCapture(ss) {
+  if (!ss.active || ss.recovering || document.hidden) return;
+  clearTimeout(ss.retryTimer);
+  ss.retryTimer = null;
+  ss.recovering = true;
+  try {
+    // まだ動いている(けれど止まっている)録画は切り離して止める。最後の分は書き込まれる
+    if (rec && rec.state !== 'inactive') { rec.onstop = null; try { rec.stop(); } catch (e) {} }
+    if (cameraEnded()) {
+      await prepareCamera();
+      if (!ss.active) { stopStream(); return; }  // 待っている間に停止操作された
+    }
+    startPart(ss);
+    blackMsg('');
+    keepAwake();
+  } catch (e) {
+    if (ss.active) {
+      blackMsg('カメラを再開できません。再試行しています...\n(終えるときは10回タップ)');
+      ss.retryTimer = setTimeout(() => { ss.retryTimer = null; recoverCapture(ss); }, 5000);
+    }
+  } finally {
+    ss.recovering = false;
+  }
+}
+
+// 見張り役: 5秒ごとに録画が続いているかを確かめ、止まっていれば再開する。
+// あわせて「録画中」の印を残し、アプリが落ちて開き直したときに自動で再開できるようにする
+function startWatchdog(ss) {
+  const beat = () => store.set('recHeartbeat', JSON.stringify({ sid: ss.sid, t: Date.now() }));
+  beat();
+  ss.dog = setInterval(() => {
+    if (!ss.active) { clearInterval(ss.dog); return; }
+    beat();
+    if (document.hidden || ss.recovering || ss.retryTimer) return;
+    if (cameraEnded()) onCameraEnded(ss);
+    else if (!rec || rec.state === 'inactive' || Date.now() - ss.lastData > 15000) recoverCapture(ss);
+  }, 5000);
+}
 
 // 録画中は自動ロックさせない(ロックされるとiOSがカメラを止めてしまう)
 async function keepAwake() {
-  try { wakeLock = await navigator.wakeLock.request('screen'); return; } catch (e) {}
+  if (document.hidden) return;
+  try {
+    if (!wakeLock || wakeLock.released) {
+      wakeLock = await navigator.wakeLock.request('screen');
+      // iOSが勝手に解除したら(低電力モードなど)、すぐに取り直す
+      wakeLock.addEventListener('release', () => { if (session && session.active && !document.hidden) keepAwake(); });
+    }
+    return;
+  } catch (e) {}
   // 使えない場合の代わり: 見えない小さな動画を再生し続ける
   const v = $('awake');
   v.srcObject = stream;
@@ -401,7 +494,9 @@ async function keepAwake() {
 }
 
 function releaseAwake() {
-  if (wakeLock) { wakeLock.release().catch(() => {}); wakeLock = null; }
+  const l = wakeLock;
+  wakeLock = null;
+  if (l) l.release().catch(() => {});
   $('awake').srcObject = null;
 }
 
@@ -415,6 +510,10 @@ function stopRecording() {
   const ss = session;
   if (!ss || !ss.active) return;
   ss.active = false;
+  clearInterval(ss.dog);
+  clearTimeout(ss.retryTimer);
+  store.set('recHeartbeat', '');
+  blackMsg('');
   closeViewer(true);
   setTheme(false);
   $('black').style.display = 'none';
@@ -428,6 +527,7 @@ function stopRecording() {
 async function finalize(ss) {
   if (ss.finalized) return;
   ss.finalized = true;
+  await new Promise(r => setTimeout(r, 300));  // 止めた録画の最後の分が届くのを待つ
   await ss.chain;
   stopStream();  // 保存画面ではカメラを止めて、電池と発熱を節約する
   if (session === ss) session = null;
@@ -439,13 +539,37 @@ async function finalize(ss) {
   await openSaveScreen(cur, ss.mem);
 }
 
-// アプリを離れるとiOSがカメラを止めるので、それまでの分を確定させる
+// 画面を離れても(ロック・他のアプリ・通知)録画は止めない。
+// 離れる直前に最新分を端末内へ書き出し、戻ってきたらカメラが止まっていれば自動で再開する
 document.addEventListener('visibilitychange', () => {
-  if (document.hidden) stopRecording();
-  else if (wakeLock === null && session && session.active) keepAwake();
+  const ss = session;
+  if (!ss || !ss.active) return;
+  if (document.hidden) {
+    try { if (rec && rec.state === 'recording') rec.requestData(); } catch (e) {}
+    return;
+  }
+  keepAwake();
+  if (cameraEnded() || !rec || rec.state === 'inactive') recoverCapture(ss);
+  else ss.lastData = Date.now();  // 離れていた間は止まっていて当然なので、見張りの計測をやり直す
 });
 
-window.addEventListener('pagehide', stopRecording);
+window.addEventListener('pagehide', () => {
+  try { if (rec && rec.state === 'recording') rec.requestData(); } catch (e) {}
+});
+
+// アプリが落ちて開き直した(1分以内)なら、止まった録画の続きを自動で録り始める
+async function resumeIfInterrupted() {
+  let hb = null;
+  try { hb = JSON.parse(store.get('recHeartbeat') || 'null'); } catch (e) {}
+  if (!hb || Date.now() - hb.t > 60000) return false;
+  store.set('recHeartbeat', '');
+  const meta = await dbDo('meta', 'readonly', s => s.get(hb.sid)).catch(() => null);
+  if (!meta || meta.end) return false;
+  const keys = await dbDo('chunks', 'readonly', s => s.getAllKeys(rangeOf(hb.sid))).catch(() => []);
+  if (keys.some(k => k.split(':').length !== 3)) return false;  // 古い版の録画は続きにしない
+  const nums = keys.map(k => Number(k.split(':')[1]));
+  return startRecording({ meta, nextPart: nums.length ? Math.max(...nums) + 1 : 0 });
+}
 
 // ---------- 真っ黒画面: 5回タップでメモ / 10回タップで停止 ----------
 let taps = 0, tapTimer = null, hintTimer = null;
@@ -953,6 +1077,7 @@ async function refreshStored() {
 }
 refreshStored();
 showHomeInfo();
+resumeIfInterrupted();
 
 // 圏外でもアプリを開けるよう、ページと表示用プログラムを端末に保存しておく
 if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(() => {});
