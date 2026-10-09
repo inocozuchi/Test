@@ -124,9 +124,9 @@
     <option value="1920x1080@30">1080p 30fps</option>
   </select>
   <select id="size" aria-label="容量">
-    <option value="std">容量: 標準(純正カメラのH.264と同じ)</option>
-    <option value="high">容量: 多め(最高画質)</option>
-    <option value="save">容量: 少なめ(約6割)</option>
+    <option value="std">データ量: 標準</option>
+    <option value="high">データ量: 多め(動きの多い場面でも細部が崩れにくい)</option>
+    <option value="save">データ量: 少なめ(画質は下がります)</option>
   </select>
   <button id="recBtn" aria-label="録画開始"></button>
   <div id="err"></div>
@@ -220,17 +220,18 @@ async function tryOpen(w, h, fps) {
 
 // 自動: 4K60から順に試し、解像度とフレームレートの両方を満たした最初の設定を使う。手動: 選んだ設定だけ試す
 // 自動で決まった設定は覚えておき、次回はそこから試す(使えない設定を毎回試さないので起動が速い)
-async function openCamera() {
+// prefer: 録画の自動再開のときは、最初と同じ設定を真っ先に試す(再開で画質が変わらないように)
+async function openCamera(prefer) {
   const v = $('quality').value;
   let list = v === 'auto' ? CANDIDATES : [v.split(/[x@]/).map(Number)];
-  if (v === 'auto') {
-    const i = Number(store.get('autoIndex'));
-    if (i > 0 && i < CANDIDATES.length) list = [...CANDIDATES.slice(i), ...CANDIDATES.slice(0, i)];
-  }
+  // 自動のとき、前回4K60が使えなかったなら次の候補から試す(起動を速くする)。
+  // それより下の画質は覚えない: 一時的に開けなかっただけで、ずっと低い画質になってしまうため
+  if (v === 'auto' && store.get('autoIndex') !== null && Number(store.get('autoIndex')) >= 1) list = CANDIDATES.slice(1);
+  if (prefer) list = [prefer, ...list.filter(c => c.join() !== prefer.join())];
   for (const [w, h, fps] of list) {
     try {
       if (await tryOpen(w, h, fps)) {
-        if (v === 'auto') store.set('autoIndex', CANDIDATES.findIndex(c => c[0] === w && c[2] === fps));
+        if (v === 'auto' && !prefer) store.set('autoIndex', Math.min(1, CANDIDATES.findIndex(c => c[0] === w && c[2] === fps)));
         return true;
       }
     } catch (e) {}
@@ -245,8 +246,8 @@ async function openCamera() {
 }
 
 // 録画ボタンを押した時にだけカメラを起動する(待機中は電池を使わない)
-async function prepareCamera() {
-  const ok = await openCamera();
+async function prepareCamera(prefer) {
+  const ok = await openCamera(prefer);
   // ライト(トーチ)は明示的に消灯しておく
   await stream.getVideoTracks()[0].applyConstraints({ advanced: [{ torch: false }] }).catch(() => {});
   const s = fmtSettings();
@@ -346,14 +347,15 @@ async function deleteRecording(sid) {
 }
 
 // ---------- 録画 ----------
-// 1秒あたりのデータ量(Mbps)。「標準」はiPhone純正カメラのH.264(互換性優先)と同じ。
-// 1時間あたりの容量 ≒ Mbps × 0.45 GB(4K30の標準なら約21GB)
+// 1秒あたりのデータ量(Mbps)の指定値。1時間あたりの容量 ≒ Mbps × 0.45 GB。
+// Safariは指定より少なめ(実測で約7割)に記録し、車窓のように画面全体が動く映像はデータ量が足りないと
+// ブロック状に崩れやすい。そのため「標準」も純正カメラより多めにしている(4K30の標準で1時間約27GB)
 const MBPS_TABLE = {
-  '4k60':  { high: 60, std: 58, save: 36 },
-  '4k30':  { high: 60, std: 47, save: 28 },
-  '1080p60': { high: 35, std: 27, save: 16 },
-  '1080p30': { high: 20, std: 17, save: 10 },
-  '720p30': { high: 10, std: 8, save: 5 },
+  '4k60':  { high: 100, std: 80, save: 40 },
+  '4k30':  { high: 80, std: 60, save: 30 },
+  '1080p60': { high: 45, std: 32, save: 18 },
+  '1080p30': { high: 30, std: 16, save: 10 },
+  '720p30': { high: 15, std: 8, save: 5 },
 };
 function modeKey(w, h, fps) {
   const long = Math.max(w, h);
@@ -362,10 +364,9 @@ function modeKey(w, h, fps) {
 function mbpsFor(w, h, fps) {
   return MBPS_TABLE[modeKey(w, h, fps)][$('size').value] || 27;
 }
-function bitrate(mime) {
+function bitrate() {
   const s = fmtSettings();
-  // HEVCが使える場合は、H.264の約半分で同じ画質になる
-  return Math.round(mbpsFor(s.w, s.h, s.fps) * 1e6 * (mime.includes('hvc1') ? 0.55 : 1));
+  return Math.round(mbpsFor(s.w, s.h, s.fps) * 1e6);
 }
 
 $('recBtn').onclick = () => startRecording();
@@ -406,7 +407,8 @@ async function startRecording(resume) {
   }
   const ss = session = { sid: cur.sid, mime, active: true, finalized: false, part: resume ? resume.nextPart - 1 : -1,
                          useMem: false, mem: [], chain: Promise.resolve(), recovering: false, retryTimer: null,
-                         lastData: Date.now(), dog: null };
+                         lastData: Date.now(), dog: null, mode: null };
+  { const st = fmtSettings(); ss.mode = [Math.max(st.w, st.h), Math.min(st.w, st.h), st.fps]; }
   // 端末内DBが最初から使えない場合だけメモリに溜める
   ss.chain = dbDo('meta', 'readwrite', st => st.put(cur, cur.sid)).catch(() => { ss.useMem = true; });
   try {
@@ -425,11 +427,12 @@ async function startRecording(resume) {
 
 // MediaRecorder を1つ動かす。カメラや録画が途中で止まったら、同じ録画の次のパートとして録り直す
 function startPart(ss) {
-  const r = new MediaRecorder(stream, { mimeType: ss.mime || undefined, videoBitsPerSecond: bitrate(ss.mime) });
+  const r = new MediaRecorder(stream, { mimeType: ss.mime || undefined, videoBitsPerSecond: bitrate() });
   ss.part++;
   const pp = String(ss.part).padStart(3, '0');
   let idx = 0;
   if (r.mimeType) cur.mime = r.mimeType;
+  { const st = fmtSettings(); cur.partInfo = { ...(cur.partInfo || {}), [pp]: `${Math.max(st.w, st.h)}×${Math.min(st.w, st.h)} ${st.fps}fps` }; }
   r.ondataavailable = e => {
     if (!e.data.size) return;
     ss.lastData = Date.now();
@@ -482,7 +485,7 @@ async function recoverCapture(ss) {
     // まだ動いている(けれど止まっている)録画は切り離して止める。最後の分は書き込まれる
     if (rec && rec.state !== 'inactive') { rec.onstop = null; try { rec.stop(); } catch (e) {} }
     if (cameraEnded()) {
-      await prepareCamera();
+      await prepareCamera(ss.mode);
       if (!ss.active) { stopStream(); return; }  // 待っている間に停止操作された
     }
     startPart(ss);
@@ -997,7 +1000,8 @@ function renderSaveScreen(meta) {
 function trimBox(f, i) {
   const idx = f.idx, last = idx.segs.length - 1;
   const div = el('div', 'fileBox');
-  if (files.length > 1) div.append(el('div', 'name', `パート${i + 1}`));
+  const q = cur.partInfo && cur.partInfo[f.pp];
+  if (files.length > 1) div.append(el('div', 'name', `パート${i + 1}${q ? ` ・ ${q}` : ''}`));
 
   const row = (label) => {
     const r = el('label', 'rangeRow');
