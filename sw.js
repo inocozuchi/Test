@@ -1,11 +1,12 @@
 // 圏外(電車の中など)でもアプリを開けるよう、ページと PDF 表示用プログラムを端末に保存しておく。
 // ページ本体は通信できればいつも最新を取りにいき、つながらないときだけ保存してあるものを使う。
 // ファイルを変えたら VERSION を上げる(古い保存分を入れ替えるため)
-const VERSION = 'v1';
+const VERSION = 'v2';
 const CACHE = `silentcam-${VERSION}`;
 const FILES = [
   './',
   'index.html',
+  'mp4split.js',
   'manifest.json',
   'apple-touch-icon.png',
   'icon-192.png',
@@ -216,9 +217,91 @@ function fetchWithTimeout(req, ms) {
   });
 }
 
+// ---------- 録画の書き出し(ファイルアプリへのダウンロード) ----------
+// ページから「どの部分をどの順に書き出すか」の設計図を受け取り、端末内DBの録画データを少しずつ読み出して流す。
+// 一度に全部をメモリに読み込まないので、数十GBの録画でも書き出せる。進み具合はページに知らせる
+const exportsById = new Map();
+
+self.addEventListener('message', e => {
+  const m = e.data;
+  if (m && m.type === 'export') {
+    exportsById.set(m.id, m);
+    setTimeout(() => exportsById.delete(m.id), 60 * 60 * 1000);
+    if (e.ports[0]) e.ports[0].postMessage('ok');
+  }
+});
+
+function openDB() {
+  return new Promise((res, rej) => {
+    const r = indexedDB.open('silentcam', 1);
+    r.onupgradeneeded = () => { r.result.createObjectStore('chunks'); r.result.createObjectStore('meta'); };
+    r.onsuccess = () => res(r.result);
+    r.onerror = () => rej(r.error);
+  });
+}
+
+async function recordingBlob(m) {
+  const db = await openDB();
+  const prefix = m.legacy ? m.sid : `${m.sid}:${m.pp}`;
+  const blobs = await new Promise((res, rej) => {
+    const q = db.transaction('chunks').objectStore('chunks').getAll(IDBKeyRange.bound(`${prefix}:`, `${prefix}:\uffff`));
+    q.onsuccess = () => res(q.result);
+    q.onerror = () => rej(q.error);
+  });
+  db.close();
+  return new Blob(blobs);
+}
+
+async function notify(msg) {
+  for (const c of await self.clients.matchAll({ includeUncontrolled: true })) c.postMessage(msg);
+}
+
+async function exportResponse(id) {
+  const m = exportsById.get(id);
+  if (!m) return new Response('この書き出しは期限切れです。もう一度お試しください。', { status: 404 });
+  const blob = await recordingBlob(m);
+  const STEP = 4 * 1024 * 1024;
+  let i = 0, off = 0, sent = 0, lastPct = -1;
+  const report = (extra) => {
+    const pct = Math.floor(sent / m.size * 100);
+    if (extra || pct !== lastPct) { lastPct = pct; notify({ type: 'exportProgress', id, sent, total: m.size, ...extra }); }
+  };
+  const stream = new ReadableStream({
+    async pull(ctrl) {
+      try {
+        if (i >= m.items.length) { report({ done: true }); ctrl.close(); return; }
+        const it = m.items[i];
+        let chunk;
+        if (it.b) { chunk = it.b; i++; }
+        else {
+          const end = Math.min(it.e, it.s + off + STEP);
+          chunk = new Uint8Array(await blob.slice(it.s + off, end).arrayBuffer());
+          off = end - it.s;
+          if (end >= it.e) { i++; off = 0; }
+        }
+        ctrl.enqueue(chunk);
+        sent += chunk.length;
+        report();
+      } catch (err) {
+        report({ error: err.name || 'error' });
+        ctrl.error(err);
+      }
+    },
+    cancel() { report({ error: '中断されました' }); },
+  });
+  report();
+  return new Response(stream, { headers: {
+    'Content-Type': m.mime || 'video/mp4',
+    'Content-Length': String(m.size),
+    'Content-Disposition': `attachment; filename*=UTF-8''${encodeURIComponent(m.name)}`,
+  } });
+}
+
 self.addEventListener('fetch', e => {
   const req = e.request;
   if (req.method !== 'GET' || new URL(req.url).origin !== location.origin) return;
+  const ex = new URL(req.url).pathname.match(/\/export\/([a-z0-9]+)\//);
+  if (ex) { e.respondWith(exportResponse(ex[1])); return; }
   if (req.mode === 'navigate') {
     e.respondWith(fetchWithTimeout(req, 4000)
       .then(res => { if (res.ok) { const copy = res.clone(); caches.open(CACHE).then(c => c.put('index.html', copy)); } return res; })

@@ -82,6 +82,21 @@
   .fileBox { width: 100%; max-width: 340px; display: flex; flex-direction: column; align-items: center; gap: 8px; padding: 12px; border: 1px solid #ddd; border-radius: 12px; }
   .fileBox .name { font-size: 13px; color: #555; }
   .note { font-size: 12px; color: #666; white-space: pre-wrap; text-align: left; }
+  .rangeRow { display: flex; align-items: center; gap: 8px; width: 100%; font-size: 13px; }
+  .rangeRow input { flex: 1; }
+  .rangeLabel { width: 2.5em; text-align: left; color: #555; }
+  .rangeVal { width: 4.5em; text-align: right; font-variant-numeric: tabular-nums; }
+  .nudges { display: flex; gap: 4px; width: 100%; justify-content: space-between; }
+  .nudge { flex: 1; border: 1px solid #ccc; background: #fff; color: #333; border-radius: 8px; font-size: 12px; padding: 6px 0; }
+  .previews { display: flex; gap: 8px; width: 100%; }
+  .previews video { flex: 1; min-width: 0; aspect-ratio: 16 / 9; background: #000; border-radius: 6px; object-fit: contain; }
+  .sel { font-size: 13px; color: #333; }
+  .pieces { display: flex; flex-direction: column; gap: 6px; width: 100%; }
+  .pieces .btn { width: 100%; }
+  .prog { width: 100%; display: flex; flex-direction: column; gap: 6px; }
+  .bar { height: 8px; background: #e5e5e5; border-radius: 4px; overflow: hidden; }
+  .barIn { height: 100%; width: 0; background: #2a7; transition: width .3s; }
+  .progText { font-size: 12px; color: #444; white-space: pre-wrap; }
   #msg { font-size: 14px; color: #444; white-space: pre-wrap; margin-top: auto; }
   #saveErr { font-size: 13px; color: #c22; white-space: pre-wrap; }
   #resultEnd { margin-bottom: auto; display: flex; flex-direction: column; align-items: center; gap: 10px; width: 100%; }
@@ -107,6 +122,11 @@
     <option value="1920x1080@60">1080p 60fps(滑らか・発熱少なめ)</option>
     <option value="3840x2160@30">4K 30fps(高精細・発熱大きめ)</option>
     <option value="1920x1080@30">1080p 30fps</option>
+  </select>
+  <select id="size" aria-label="容量">
+    <option value="std">容量: 標準(純正カメラのH.264と同じ)</option>
+    <option value="high">容量: 多め(最高画質)</option>
+    <option value="save">容量: 少なめ(約6割)</option>
   </select>
   <button id="recBtn" aria-label="録画開始"></button>
   <div id="err"></div>
@@ -157,6 +177,7 @@
 
 <div id="busy"><div class="spinner"></div><div id="busyText"></div></div>
 
+<script src="mp4split.js"></script>
 <script>
 const $ = id => document.getElementById(id);
 let stream = null, wakeLock = null;
@@ -245,15 +266,15 @@ const store = {
 };
 if (store.get('quality')) $('quality').value = store.get('quality');
 $('quality').onchange = () => { store.set('quality', $('quality').value); showHomeInfo(); };
+if (store.get('size')) $('size').value = store.get('size');
+$('size').onchange = () => { store.set('size', $('size').value); showHomeInfo(); };
 
 // ホーム上部: 空き容量と、選んだ画質で録画できるおおよその時間
-const MBPS = { '3840x2160@60': 60, '3840x2160@30': 60, '1920x1080@60': 31, '1920x1080@30': 16 };
 function expectedMode() {
   const v = $('quality').value;
-  if (v !== 'auto') return v;
+  if (v !== 'auto') return v.split(/[x@]/).map(Number);
   const i = store.get('autoIndex');
-  const [w, h, fps] = CANDIDATES[i === null ? 1 : Number(i)] || CANDIDATES[1];  // 未確定なら1080p60と見なす
-  return `${w}x${h}@${fps}`;
+  return CANDIDATES[i === null ? 1 : Number(i)] || CANDIDATES[1];  // 未確定なら1080p60と見なす
 }
 async function showHomeInfo() {
   let text = '';
@@ -261,7 +282,7 @@ async function showHomeInfo() {
     const est = await navigator.storage.estimate();
     const free = est.quota - est.usage;
     if (free > 0 && free < 1e13) {
-      const min = Math.floor(free * 8 / ((MBPS[expectedMode()] || 31) * 1e6) / 60);
+      const min = Math.floor(free * 8 / (mbpsFor(...expectedMode()) * 1e6) / 60);
       text = `保存できる空き: ${fmtSize(free)}(この画質で約${min >= 120 ? `${Math.floor(min / 60)}時間` : `${min}分`})`;
     }
   } catch (e) {}
@@ -325,11 +346,26 @@ async function deleteRecording(sid) {
 }
 
 // ---------- 録画 ----------
-// 純正カメラと同程度のビットレート(HEVCはH.264の約半分で同等画質)
+// 1秒あたりのデータ量(Mbps)。「標準」はiPhone純正カメラのH.264(互換性優先)と同じ。
+// 1時間あたりの容量 ≒ Mbps × 0.45 GB(4K30の標準なら約21GB)
+const MBPS_TABLE = {
+  '4k60':  { high: 60, std: 58, save: 36 },
+  '4k30':  { high: 60, std: 47, save: 28 },
+  '1080p60': { high: 35, std: 27, save: 16 },
+  '1080p30': { high: 20, std: 17, save: 10 },
+  '720p30': { high: 10, std: 8, save: 5 },
+};
+function modeKey(w, h, fps) {
+  const long = Math.max(w, h);
+  return long >= 3000 ? (fps > 45 ? '4k60' : '4k30') : long >= 1800 ? (fps > 45 ? '1080p60' : '1080p30') : '720p30';
+}
+function mbpsFor(w, h, fps) {
+  return MBPS_TABLE[modeKey(w, h, fps)][$('size').value] || 27;
+}
 function bitrate(mime) {
   const s = fmtSettings();
-  const k = mime.includes('hvc1') ? 0.14 : 0.25;
-  return Math.min(60e6, Math.round(s.w * s.h * s.fps * k));
+  // HEVCが使える場合は、H.264の約半分で同じ画質になる
+  return Math.round(mbpsFor(s.w, s.h, s.fps) * 1e6 * (mime.includes('hvc1') ? 0.55 : 1));
 }
 
 $('recBtn').onclick = () => startRecording();
@@ -877,12 +913,19 @@ document.addEventListener('gesturestart', e => e.preventDefault());
 
 // ---------- 保存 ----------
 // iPhoneのSafariは、共有メニューに渡す動画をいったん全部メモリに読み込む。
-// 大きな動画を渡すとページごと落ちるため、共有(写真アプリへ直接保存)は小さい動画だけにする。
-// 大きな動画は「ファイルアプリに保存」(ダウンロード)で、ファイルアプリに少しずつ書き出す。
+// 大きな動画を渡すとページごと落ちるため、写真アプリへの保存は約300MBずつに分けて渡す。
+// 録画は「短い区切りの連続」なので、区切り単位で好きな区間を切り出し、単独で再生できる動画に作り直せる(mp4split.js)。
 const SHARE_LIMIT = 300e6;
 const isChromeIOS = /CriOS/.test(navigator.userAgent);
 
-// 端末内DBからファイルを組み立てる(中身はここでは読み込まない)
+// 秒 → "1:02:03" / "2:03"
+function fmtTime(sec) {
+  sec = Math.max(0, Math.round(sec));
+  const h = Math.floor(sec / 3600), m = Math.floor(sec % 3600 / 60), s2 = String(sec % 60).padStart(2, '0');
+  return h ? `${h}:${String(m).padStart(2, '0')}:${s2}` : `${m}:${s2}`;
+}
+
+// 端末内DBからパートごとのファイルを組み立てる(中身はここでは読み込まない)
 async function buildFiles(meta, mem = []) {
   const sid = meta.sid;
   const base = meta.base || (meta.name || `video-${sid}`).replace(/\.\w+$/, '');
@@ -902,8 +945,10 @@ async function buildFiles(meta, mem = []) {
     groups.get(pp).push(data);
   }
   const all = [...groups.keys()].sort();
-  return all.map((pp, i) => new File(groups.get(pp),
-    all.length > 1 ? `${base}-part${i + 1}.${ext}` : `${base}.${ext}`, { type }));
+  return all.map((pp, i) => {
+    const name = all.length > 1 ? `${base}-part${i + 1}` : base;
+    return { pp, legacy, ext, type, name, file: new File(groups.get(pp), `${name}.${ext}`, { type }), idx: null };
+  });
 }
 
 async function openSaveScreen(meta, mem = []) {
@@ -912,6 +957,12 @@ async function openSaveScreen(meta, mem = []) {
   try {
     files = await buildFiles(meta, mem);
     meta.chunks = await dbDo('chunks', 'readonly', s => s.count(rangeOf(meta.sid))).catch(() => 0);
+    // 区間を選べるよう、動画の目次を作る(大きな動画は少し時間がかかる)
+    for (let i = 0; i < files.length; i++) {
+      const label = files.length > 1 ? `(パート${i + 1}/${files.length})` : '';
+      busy(`動画を調べています${label}...`);
+      files[i].idx = await MP4Split.index(files[i].file, r => busy(`動画を調べています${label}... ${Math.floor(r * 100)}%`)).catch(() => null);
+    }
   } catch (e) {
     files = [];
     meta.note = (meta.note ? meta.note + '\n' : '') + `読み込みに失敗しました(${e.name})`;
@@ -920,58 +971,150 @@ async function openSaveScreen(meta, mem = []) {
   renderSaveScreen(meta);
 }
 
+function el(tag, cls, text) {
+  const e = document.createElement(tag);
+  if (cls) e.className = cls;
+  if (text != null) e.textContent = text;
+  return e;
+}
+
 function renderSaveScreen(meta) {
-  const total = files.reduce((a, f) => a + f.size, 0);
+  const total = files.reduce((a, f) => a + f.file.size, 0);
   $('msg').textContent = (meta.note ? meta.note + '\n' : '') +
     (files.length ? `${sidLabel(meta.sid)} の録画(${[fmtDur(recDuration(meta, meta.chunks)), fmtSize(total)].filter(Boolean).join('・')})` : '録画データが見つかりませんでした') +
     (meta.info ? `\n${meta.info}` : '');
   const box = $('files');
   box.replaceChildren();
-  files.forEach((f, i) => {
-    const div = document.createElement('div');
-    div.className = 'fileBox';
-    if (files.length > 1) {  // 1本だけなら大きさは上に出ているので省く
-      const name = document.createElement('div');
-      name.className = 'name';
-      name.textContent = `パート${i + 1} ・ ${fmtSize(f.size)}`;
-      div.append(name);
-    }
-    if (f.size <= SHARE_LIMIT) {
-      const b = document.createElement('button');
-      b.className = 'btn';
-      b.textContent = '写真アプリに保存';
-      b.onclick = async () => {
-        if (await shareFile(f)) { b.classList.add('done'); b.textContent = '✓ 写真アプリに保存'; }
-      };
-      div.append(b);
-      const n = document.createElement('div');
-      n.className = 'note';
-      n.textContent = '共有メニューが開いたら「ビデオを保存」を選んでください。';
-      div.append(n);
-    }
-    const d = document.createElement('button');
-    d.className = f.size <= SHARE_LIMIT ? 'btn sub' : 'btn';
-    d.textContent = 'ファイルアプリに保存';
-    d.onclick = () => {
-      downloadFile(f);
-      d.classList.add('done');
-      d.textContent = '✓ ダウンロードを開始しました';
-      $('saveErr').textContent = '進み具合は、Safariのアドレスバーにある「↓」(ダウンロード)で確認できます。\n完了するまで、この画面を閉じたり録画を削除したりしないでください。';
-    };
-    div.append(d);
-    const n2 = document.createElement('div');
-    n2.className = 'note';
-    n2.textContent = (f.size > SHARE_LIMIT ? '大きな動画のため、写真アプリへ直接は保存できません。\n' : '') +
-      '「ファイル」アプリの「ダウンロード」に保存されます。写真アプリに入れるには、ファイルアプリで動画を長押し →「共有」→「ビデオを保存」。' +
-      (isChromeIOS ? '\n大きな動画はSafariで開いて保存してください(Chromeでは失敗することがあります)。' : '');
-    div.append(n2);
-    box.append(div);
-  });
+  files.forEach((f, i) => box.append(f.idx ? trimBox(f, i) : wholeBox(f, i)));
   $('memoText').value = meta.memo || $('memoText').value;
   $('saveMemo').style.display = ($('memoText').value || '').trim() ? '' : 'none';
   $('saveErr').textContent = '';
   $('result').style.display = 'flex';
   $('result').scrollTop = 0;
+}
+
+// 区間を選んで保存する欄
+function trimBox(f, i) {
+  const idx = f.idx, last = idx.segs.length - 1;
+  const div = el('div', 'fileBox');
+  if (files.length > 1) div.append(el('div', 'name', `パート${i + 1}`));
+
+  const row = (label) => {
+    const r = el('label', 'rangeRow');
+    const input = el('input');
+    input.type = 'range'; input.min = 0; input.max = last; input.step = 1;
+    const val = el('span', 'rangeVal');
+    r.append(el('span', 'rangeLabel', label), input, val);
+    return { r, input, val };
+  };
+  const a = row('開始'), z = row('終了');
+  a.input.value = 0; z.input.value = last;
+  // スライダーは長い動画だと細かく合わせにくいので、秒・分単位で動かすボタンも付ける
+  const nudges = (target) => {
+    const r = el('div', 'nudges');
+    for (const [label, sec] of [['−1分', -60], ['−10秒', -10], ['−1秒', -1], ['+1秒', 1], ['+10秒', 10], ['+1分', 60]]) {
+      const b = el('button', 'nudge', label);
+      b.onclick = () => {
+        const k = Number(target.input.value);
+        const t = idx.segs[k].time + sec;
+        let j = k;
+        if (sec > 0) while (j < last && idx.segs[j].time < t - 0.01) j++;
+        else while (j > 0 && idx.segs[j].time > t + 0.01) j--;
+        if (j === k) j = Math.max(0, Math.min(last, k + Math.sign(sec)));
+        target.input.value = j;
+        update();
+      };
+      r.append(b);
+    }
+    return r;
+  };
+  const previews = el('div', 'previews');
+  const pa = el('video'), pz = el('video');
+  for (const v of [pa, pz]) { v.muted = true; v.playsInline = true; v.preload = 'auto'; }
+  previews.append(pa, pz);
+  const sel = el('div', 'sel');
+  const shareBtn = el('button', 'btn', '写真アプリに保存');
+  const pieces = el('div', 'pieces');
+  const dlBtn = el('button', 'btn sub', 'ファイルアプリに保存');
+  const prog = el('div', 'prog'); prog.hidden = true;
+  const bar = el('div', 'bar'); const barIn = el('div', 'barIn'); bar.append(barIn);
+  const progText = el('div', 'progText');
+  prog.append(bar, progText);
+  div.append(el('div', 'note', '保存したい範囲を選べます(1秒単位)。'), a.r, nudges(a), z.r, nudges(z), previews, sel, shareBtn, pieces, dlBtn, prog,
+    el('div', 'note', '写真アプリ: 約300MBごとに分けて保存します。共有メニューで「ビデオを保存」を選んでください。\nファイルアプリ: 1本の動画として「ダウンロード」に保存します。'));
+
+  const range = () => {
+    let i0 = Number(a.input.value), i1 = Number(z.input.value);
+    if (i0 > i1) [i0, i1] = [i1, i0];
+    return [i0, i1];
+  };
+  // 開始・終了の位置のコマを小さく表示する(その1区切りだけを作って読み込む)
+  const preview = (video, k) => {
+    if (video.src) URL.revokeObjectURL(video.src);
+    video.src = URL.createObjectURL(MP4Split.toFile(MP4Split.plan(idx, k, k, 'p.mp4'), f.file, f.type));
+  };
+  let previewTimer = null;
+  const update = () => {
+    const [i0, i1] = range();
+    a.val.textContent = fmtTime(idx.segs[Number(a.input.value)].time);
+    z.val.textContent = fmtTime(idx.segs[Number(z.input.value)].time + idx.segs[Number(z.input.value)].dur);
+    let bytes = 0;
+    for (let k = i0; k <= i1; k++) bytes += idx.segs[k].bytes;
+    const n = Math.ceil(bytes / SHARE_LIMIT);
+    sel.textContent = `選んだ範囲: ${fmtTime(idx.segs[i0].time)}〜${fmtTime(idx.segs[i1].time + idx.segs[i1].dur)}` +
+      `(${fmtDur(idx.segs[i1].time + idx.segs[i1].dur - idx.segs[i0].time)}・${fmtSize(bytes)})`;
+    shareBtn.textContent = n > 1 ? `写真アプリに保存(${n}個に分けて)` : '写真アプリに保存';
+    shareBtn.classList.remove('done');
+    pieces.replaceChildren();
+    clearTimeout(previewTimer);
+    previewTimer = setTimeout(() => { preview(pa, i0); preview(pz, i1); }, 300);
+  };
+  a.input.oninput = z.input.oninput = update;
+  update();
+
+  shareBtn.onclick = async () => {
+    const [i0, i1] = range();
+    const ps = MP4Split.plans(idx, i0, i1, SHARE_LIMIT, `${f.name}-${fmtTime(idx.segs[i0].time).replace(/:/g, '')}`, f.ext);
+    if (ps.length === 1) {
+      if (await shareFile(MP4Split.toFile(ps[0], f.file, f.type))) { shareBtn.classList.add('done'); shareBtn.textContent = '✓ 写真アプリに保存'; }
+      return;
+    }
+    // 複数に分かれる場合は、1つずつ保存ボタンを並べる(共有メニューは1回の操作で1つしか開けないため)
+    pieces.replaceChildren(el('div', 'note', `${ps.length}個に分かれます。上から順に押して、それぞれ「ビデオを保存」を選んでください。`));
+    ps.forEach((p, n) => {
+      const b = el('button', 'btn small', `${n + 1}/${ps.length}  ${fmtTime(p.from)}〜${fmtTime(p.to)}(${fmtSize(p.size)})`);
+      b.onclick = async () => {
+        if (await shareFile(MP4Split.toFile(p, f.file, f.type))) { b.classList.add('done'); b.textContent = `✓ ${b.textContent.replace(/^✓ /, '')}`; }
+      };
+      pieces.append(b);
+    });
+  };
+
+  dlBtn.onclick = () => {
+    const [i0, i1] = range();
+    const p = MP4Split.plan(idx, i0, i1, `${f.name}${i0 === 0 && i1 === last ? '' : '-' + fmtTime(idx.segs[i0].time).replace(/:/g, '')}.${f.ext}`);
+    startDownload(f, p, dlBtn, prog, barIn, progText);
+  };
+  return div;
+}
+
+// 区切りの形式でない(古い録画など)動画は、まるごと保存する
+function wholeBox(f, i) {
+  const div = el('div', 'fileBox');
+  if (files.length > 1) div.append(el('div', 'name', `パート${i + 1} ・ ${fmtSize(f.file.size)}`));
+  if (f.file.size <= SHARE_LIMIT) {
+    const b = el('button', 'btn', '写真アプリに保存');
+    b.onclick = async () => { if (await shareFile(f.file)) { b.classList.add('done'); b.textContent = '✓ 写真アプリに保存'; } };
+    div.append(b, el('div', 'note', '共有メニューが開いたら「ビデオを保存」を選んでください。'));
+  }
+  const d = el('button', f.file.size <= SHARE_LIMIT ? 'btn sub' : 'btn', 'ファイルアプリに保存');
+  const prog = el('div', 'prog'); prog.hidden = true;
+  const bar = el('div', 'bar'); const barIn = el('div', 'barIn'); bar.append(barIn);
+  const progText = el('div', 'progText');
+  prog.append(bar, progText);
+  d.onclick = () => startDownload(f, { name: f.file.name, size: f.file.size, items: [{ s: 0, e: f.file.size }] }, d, prog, barIn, progText);
+  div.append(d, prog, el('div', 'note', (f.file.size > SHARE_LIMIT ? 'この録画は区間を選べない形式のため、まるごと保存します。\n' : '') + '「ファイル」アプリの「ダウンロード」に保存されます。'));
+  return div;
 }
 
 // 写真アプリへ(共有メニュー)。共有中に二重に押せないようにする
@@ -984,12 +1127,12 @@ async function shareFile(f) {
     return false;
   }
   sharing = true;
-  busy('共有メニューを準備しています...\n(動画が大きいと数十秒かかります)');
+  busy('共有メニューを準備しています...\n(数秒〜数十秒かかります)');
   try {
     await navigator.share({ files: [f] });
     return true;
   } catch (e) {
-    if (e.name !== 'AbortError') $('saveErr').textContent = `保存できませんでした(${e.name})。「ファイルアプリに保存」をお試しください。`;
+    if (e.name !== 'AbortError') $('saveErr').textContent = `保存できませんでした(${e.name})。範囲を短くするか、「ファイルアプリに保存」をお試しください。`;
     return false;
   } finally {
     sharing = false;
@@ -997,7 +1140,73 @@ async function shareFile(f) {
   }
 }
 
-// ファイルアプリへ(ダウンロード)。ブラウザが端末内のデータを少しずつ書き出すので、大きな動画でもメモリを使い切らない
+// ファイルアプリへ(ダウンロード)。サービスワーカーが端末内のデータを少しずつ読み出して書き出すので、
+// 大きな動画でもメモリを使い切らず、進み具合もアプリ内に表示できる
+const downloads = new Map();  // id -> 表示の更新
+navigator.serviceWorker?.addEventListener('message', e => {
+  const m = e.data;
+  if (m && m.type === 'exportProgress' && downloads.has(m.id)) downloads.get(m.id)(m);
+});
+
+async function startDownload(f, p, btn, prog, barIn, progText) {
+  const ctl = navigator.serviceWorker && navigator.serviceWorker.controller;
+  $('saveErr').textContent = '';
+  if (!ctl) {  // サービスワーカーがまだ動いていない(初めて開いた直後など)ときは、従来の方法で
+    const whole = p.items.length === 1 && p.items[0].s === 0 && p.items[0].e === f.file.size;
+    downloadFile(whole ? f.file : MP4Split.toFile(p, f.file, f.type));
+    btn.classList.add('done');
+    btn.textContent = '✓ ダウンロードを開始しました';
+    return;
+  }
+  const id = Math.random().toString(36).slice(2);
+  try {
+    await new Promise((res, rej) => {
+      const ch = new MessageChannel();
+      ch.port1.onmessage = () => res();
+      ctl.postMessage({ type: 'export', id, sid: cur.sid, pp: f.pp, legacy: f.legacy, name: p.name, size: p.size, items: p.items, mime: f.type }, [ch.port2]);
+      setTimeout(() => rej(new Error('timeout')), 5000);
+    });
+  } catch (e) {
+    $('saveErr').textContent = 'ダウンロードの準備ができませんでした。アプリを開き直してお試しください。';
+    return;
+  }
+  btn.disabled = true;
+  prog.hidden = false;
+  barIn.style.width = '0%';
+  progText.textContent = 'ダウンロードを始めています...';
+  let started = false;
+  const noStart = setTimeout(() => {
+    if (started) return;
+    progText.textContent = 'ダウンロードが始まりませんでした。\nホーム画面のアプリではダウンロードできないことがあります。「写真アプリに保存」(分けて保存)をお使いください。';
+    btn.disabled = false;
+  }, 15000);
+  downloads.set(id, m => {
+    started = true;
+    clearTimeout(noStart);
+    const pct = Math.floor(m.sent / m.total * 100);
+    barIn.style.width = `${pct}%`;
+    if (m.done) {
+      progText.textContent = `✓ 書き出し完了(${fmtSize(m.total)})。ファイルアプリの「ダウンロード」を確認してください。`;
+      btn.classList.add('done');
+      btn.textContent = '✓ ファイルアプリに保存';
+      btn.disabled = false;
+      downloads.delete(id);
+    } else if (m.error) {
+      progText.textContent = `書き出しに失敗しました(${m.error})。もう一度お試しください。`;
+      btn.disabled = false;
+      downloads.delete(id);
+    } else {
+      progText.textContent = `書き出し中... ${pct}%(${fmtSize(m.sent)} / ${fmtSize(m.total)})\n完了するまでアプリを開いたままにしてください。`;
+    }
+  });
+  // 見えない枠の中で開くと、ブラウザがダウンロードとして受け取る(このページから離れない)
+  const frame = document.createElement('iframe');
+  frame.style.display = 'none';
+  frame.src = `export/${id}/${encodeURIComponent(p.name)}`;
+  document.body.append(frame);
+  setTimeout(() => frame.remove(), 60 * 60 * 1000);
+}
+
 const downloadURLs = [];
 function downloadFile(f) {
   const a = document.createElement('a');
@@ -1006,7 +1215,7 @@ function downloadFile(f) {
   document.body.append(a);
   a.click();
   a.remove();
-  downloadURLs.push(a.href);  // 書き出しが終わるまで解放しない(画面を離れるときに解放)
+  downloadURLs.push(a.href);  // 書き出しが終わるまで解放しない(削除したときに解放)
 }
 
 $('saveMemo').onclick = () => {
