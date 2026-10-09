@@ -123,6 +123,11 @@
     <option value="3840x2160@30">4K 30fps(高精細・発熱大きめ)</option>
     <option value="1920x1080@30">1080p 30fps</option>
   </select>
+  <select id="lens" aria-label="レンズ">
+    <option value="wide">レンズ: 標準(1x)</option>
+    <option value="ultra">レンズ: 超広角(0.5x)</option>
+    <option value="tele">レンズ: 望遠(ある機種のみ)</option>
+  </select>
   <select id="size" aria-label="容量">
     <option value="std">データ量: 標準</option>
     <option value="high">データ量: 多め(動きの多い場面でも細部が崩れにくい)</option>
@@ -207,13 +212,39 @@ function stopStream() {
   stream = null;
 }
 
+// ---- レンズ ----
+// 「背面カメラ」とだけ指定すると、iPhoneは超広角や、レンズを自動で切り替える仮想カメラを選ぶことがある。
+// 遠くの文字までくっきり写すため、標準の広角レンズ(1x)を名前で探して指定する
+const LENS = { wide: /^(Back Camera|背面カメラ)$/i, ultra: /(Ultra Wide|超広角)/i, tele: /(Telephoto|望遠)/i };
+let lensIds = null;
+async function findLenses() {
+  if (lensIds) return lensIds;
+  let devs = await navigator.mediaDevices.enumerateDevices();
+  if (!devs.some(d => d.kind === 'videoinput' && d.label)) {
+    // カメラ名はカメラを一度使ったあとでないと読めないので、一瞬だけ開いて閉じる
+    const st = await navigator.mediaDevices.getUserMedia({ audio: false, video: { facingMode: { ideal: 'environment' } } });
+    st.getTracks().forEach(t => t.stop());
+    devs = await navigator.mediaDevices.enumerateDevices();
+  }
+  const vids = devs.filter(d => d.kind === 'videoinput');
+  lensIds = {};
+  for (const [k, re] of Object.entries(LENS)) {
+    const d = vids.find(v => re.test(v.label) && !/(Dual|Triple|デュアル|トリプル|Front|前面)/i.test(v.label));
+    if (d) lensIds[k] = d.deviceId;
+  }
+  return lensIds;
+}
+let lensId = null;  // 今回使うレンズ(見つからなければ「背面カメラ」とだけ指定)
+
+function videoConstraints(w, h, fps, strictFps) {
+  return { ...(lensId ? { deviceId: { exact: lensId } } : { facingMode: { ideal: 'environment' } }),
+           width: { ideal: w }, height: { ideal: h }, frameRate: strictFps ? { min: fps - 1, ideal: fps } : { ideal: fps } };
+}
+
 // frameRate を min で指定し、そのフレームレートを出せない場合は失敗させる
 async function tryOpen(w, h, fps) {
   stopStream();
-  stream = await navigator.mediaDevices.getUserMedia({
-    audio: false,
-    video: { facingMode: { ideal: 'environment' }, width: { ideal: w }, height: { ideal: h }, frameRate: { min: fps - 1, ideal: fps } },
-  });
+  stream = await navigator.mediaDevices.getUserMedia({ audio: false, video: videoConstraints(w, h, fps, true) });
   const s = fmtSettings();
   return Math.max(s.w, s.h) >= w;
 }
@@ -238,20 +269,26 @@ async function openCamera(prefer) {
   }
   stopStream();
   const [w, h, fps] = list[0];
-  stream = await navigator.mediaDevices.getUserMedia({
-    audio: false,
-    video: { facingMode: { ideal: 'environment' }, width: { ideal: w }, height: { ideal: h }, frameRate: { ideal: fps } },
-  });
+  stream = await navigator.mediaDevices.getUserMedia({ audio: false, video: videoConstraints(w, h, fps, false) });
   return v === 'auto';
 }
 
 // 録画ボタンを押した時にだけカメラを起動する(待機中は電池を使わない)
 async function prepareCamera(prefer) {
-  const ok = await openCamera(prefer);
+  try { lensId = (await findLenses())[$('lens').value] || null; } catch (e) { lensId = null; }
+  let ok;
+  try {
+    ok = await openCamera(prefer);
+  } catch (e) {
+    if (!lensId) throw e;
+    lensId = null;  // 指定したレンズで開けなければ、いつもの「背面カメラ」で開く
+    ok = await openCamera(prefer);
+  }
   // ライト(トーチ)は明示的に消灯しておく
   await stream.getVideoTracks()[0].applyConstraints({ advanced: [{ torch: false }] }).catch(() => {});
   const s = fmtSettings();
-  let text = `${Math.max(s.w, s.h)}×${Math.min(s.w, s.h)} ${s.fps}fps${ok ? '' : '(選んだ設定は使えませんでした)'}`;
+  const label = stream.getVideoTracks()[0].label;
+  let text = `${Math.max(s.w, s.h)}×${Math.min(s.w, s.h)} ${s.fps}fps${ok ? '' : '(選んだ設定は使えませんでした)'}${label ? ` ・ ${label}` : ''}`;
   const c = stream.getVideoTracks()[0].getCapabilities?.();
   if (c && c.exposureCompensation) {
     // 流れる景色のブレ対策: 露出を少し下げてシャッター速度を稼ぐ(対応していれば)
@@ -267,6 +304,8 @@ const store = {
 };
 if (store.get('quality')) $('quality').value = store.get('quality');
 $('quality').onchange = () => { store.set('quality', $('quality').value); showHomeInfo(); };
+if (store.get('lens')) $('lens').value = store.get('lens');
+$('lens').onchange = () => store.set('lens', $('lens').value);
 if (store.get('size')) $('size').value = store.get('size');
 $('size').onchange = () => { store.set('size', $('size').value); showHomeInfo(); };
 
