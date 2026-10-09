@@ -1073,7 +1073,8 @@ function trimBox(f, i) {
   };
   const previews = el('div', 'previews');
   const pa = el('video'), pz = el('video');
-  for (const v of [pa, pz]) { v.muted = true; v.playsInline = true; v.preload = 'auto'; }
+  // 保存する前の映像を、再生ボタンや全画面(拡大できる)で確かめられるようにする
+  for (const v of [pa, pz]) { v.muted = true; v.playsInline = true; v.preload = 'auto'; v.controls = true; }
   previews.append(pa, pz);
   const sel = el('div', 'sel');
   const shareBtn = el('button', 'btn', '写真アプリに保存');
@@ -1083,7 +1084,8 @@ function trimBox(f, i) {
   const bar = el('div', 'bar'); const barIn = el('div', 'barIn'); bar.append(barIn);
   const progText = el('div', 'progText');
   prog.append(bar, progText);
-  div.append(el('div', 'note', '保存したい範囲を選べます(1秒単位)。'), a.r, nudges(a), z.r, nudges(z), previews, sel, shareBtn, pieces, dlBtn, prog,
+  div.append(el('div', 'note', '保存したい範囲を選べます(1秒単位)。'), a.r, nudges(a), z.r, nudges(z), previews,
+    el('div', 'note', '下の映像は端末内に記録されたままのものです。▶で再生、全画面にすると拡大して確かめられます。'), sel, shareBtn, pieces, dlBtn, prog,
     el('div', 'note', '写真アプリ: 約300MBごとに分けて保存します。共有メニューで「ビデオを保存」を選んでください。\nファイルアプリ: 1本の動画として「ダウンロード」に保存します。'));
 
   const range = () => {
@@ -1094,7 +1096,9 @@ function trimBox(f, i) {
   // 開始・終了の位置のコマを小さく表示する(その1区切りだけを作って読み込む)
   const preview = (video, k) => {
     if (video.src) URL.revokeObjectURL(video.src);
-    video.src = URL.createObjectURL(MP4Split.toFile(MP4Split.plan(idx, k, k, 'p.mp4'), f.file, f.type));
+    // 選んだ位置から約3秒ぶん(区切り3つ)を作る。終了側はそこで終わる3秒
+    const k0 = video === pz ? Math.max(0, k - 2) : k, k1 = video === pz ? k : Math.min(last, k + 2);
+    video.src = URL.createObjectURL(MP4Split.toFile(MP4Split.plan(idx, k0, k1, 'p.mp4'), f.file, f.type));
   };
   let previewTimer = null;
   const update = () => {
